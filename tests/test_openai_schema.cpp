@@ -238,11 +238,8 @@ int test_reasoning_effort() {
 
     Json conflict               = low;
     conflict["enable_thinking"] = false;
-    const GenerationRequest conflicting_request =
-        parse_chat_completion_request(conflict, default_limits());
     failures += check(api_code([&] {
-                          (void)resolve_prompt_semantics(conflicting_request, default_server(),
-                                                         effort_capabilities());
+                          (void)parse_chat_completion_request(conflict, default_limits());
                       }) == "conflicting_template_option",
                       "conflicting enable_thinking and reasoning_effort were accepted");
 
@@ -905,7 +902,7 @@ int test_props_stub() {
     options.max_context                = 16384;
     options.default_max_tokens         = 4096;
     options.enable_vision              = true;
-    options.speculative.backend        = SpeculativeBackend::Mtp;
+    options.speculative.backend        = ninfer::SpeculativeBackend::Mtp;
     options.sampling_overrides.temperature = 1.0F;
     options.sampling_overrides.top_k       = 20;
 
@@ -913,8 +910,9 @@ int test_props_stub() {
     failures += check(props.at("role") == "model", "props role is model");
     failures += check(props.at("modalities").at("vision") == true, "props vision follows --vision");
     failures += check(props.at("modalities").at("audio") == false, "props audio off");
+    failures += check(props.at("default_generation_settings").at("n_ctx") == 16384,
+                      "props n_ctx from --max-context");
     const Json params = props.at("default_generation_settings").at("params");
-    failures += check(params.at("n_ctx") == 16384, "props n_ctx from --max-context");
     failures += check(params.at("n_predict") == 4096, "props n_predict from default max tokens");
     failures += check(params.at("temperature") == 1.0, "props temperature override reported");
     failures += check(params.at("top_k") == 20, "props top_k override reported");
