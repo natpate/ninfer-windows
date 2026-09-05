@@ -261,7 +261,12 @@ docker run --rm \
 
 ## Download a model
 
-Use the Hugging Face CLI to download one of the registered artifacts:
+Windows users of the [portable release](#prebuilt-windows-release) can run the bundled
+`download_model.bat` instead: it lists the five published artifacts and downloads the one you pick
+straight from Hugging Face into `models\`, following the redirect, resuming interrupted transfers,
+and verifying the SHA-256.
+
+Any platform can also use the Hugging Face CLI to download one of the registered artifacts:
 
 ```bash
 hf download neroued/Qwen3.6-27B-NInfer \
