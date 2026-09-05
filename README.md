@@ -160,7 +160,10 @@ a `models\` folder, a `README.txt`, and `SHA256SUMS`:
    [GitHub Releases](https://github.com/natpate/ninfer-windows/releases). Verify files against
    `SHA256SUMS`, e.g. `Get-FileHash ninfer-serve.exe -Algorithm SHA256`.
 2. Extract it anywhere — the launcher scripts use relative paths and work from any location.
-3. Download a model into `models\` as in [Download a model](#download-a-model).
+3. Download a model into `models\`. Easiest on Windows: run the bundled `download_model.bat`,
+   which lists the five published artifacts and downloads the one you pick straight from Hugging
+   Face (it follows the redirect, resumes interrupted transfers, and verifies the SHA-256). Or
+   download one manually via the Hugging Face CLI, as in [Download a model](#download-a-model).
 4. Run the matching launcher, e.g. `.\qwen3_8_27b.bat`. This starts `ninfer-serve` on
    `http://127.0.0.1:8080` (API at `/v1`) and serves the WebUI at the root URL; `--webui`
    downloads the WebUI on first start, so the first run needs an internet connection (later
@@ -261,12 +264,7 @@ docker run --rm \
 
 ## Download a model
 
-Windows users of the [portable release](#prebuilt-windows-release) can run the bundled
-`download_model.bat` instead: it lists the five published artifacts and downloads the one you pick
-straight from Hugging Face into `models\`, following the redirect, resuming interrupted transfers,
-and verifying the SHA-256.
-
-Any platform can also use the Hugging Face CLI to download one of the registered artifacts:
+Use the Hugging Face CLI to download one of the registered artifacts:
 
 ```bash
 hf download neroued/Qwen3.6-27B-NInfer \
