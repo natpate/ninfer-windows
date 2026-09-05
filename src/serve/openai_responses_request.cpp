@@ -15,7 +15,7 @@
 namespace ninfer::serve {
 namespace {
 
-using Json = nlohmann::json;
+using Json = RequestJson;
 
 void require_object(const Json& value, std::string_view name = "request body") {
     if (!value.is_object()) { bad_request(std::string(name) + " must be a JSON object"); }
@@ -1056,7 +1056,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     return out;
 }
 
-void validate_metadata(const Json& body, Json& metadata) {
+void validate_metadata(const Json& body, nlohmann::json& metadata) {
     if (!body.contains("metadata") || body.at("metadata").is_null()) { return; }
     if (!body.at("metadata").is_object()) { bad_request("metadata must be an object", "metadata"); }
     if (body.at("metadata").size() > 16) {

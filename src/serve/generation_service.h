@@ -48,6 +48,7 @@ struct GenerationOutcome {
     std::string text;
     std::string reasoning;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
+    ninfer::ToolCallParseDiagnostics tool_call_parse;
     int prompt_tokens     = 0;
     int completion_tokens = 0;
     int reasoning_tokens  = 0;

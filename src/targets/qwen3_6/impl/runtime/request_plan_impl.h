@@ -815,7 +815,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         return out;
     };
     const detail::PhysicalResources source_resources =
-        source != nullptr ? resident_resources(*source) : detail::PhysicalResources{};
+        source != nullptr ? owner_exclusive_resources(*source) : detail::PhysicalResources{};
     plan->source_resources = source_resources;
     if (source != nullptr || shared_source != nullptr) {
         const StateImageHandle selected =

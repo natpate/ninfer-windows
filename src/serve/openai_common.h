@@ -3,6 +3,7 @@
 // OpenAI wire objects shared by Chat Completions and Responses HTTP handlers.
 
 #include "serve/request.h"
+#include "serve/request_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -22,9 +23,9 @@ struct OpenAIPromptCachePolicy {
     OpenAIPromptCacheAutomatic automatic = OpenAIPromptCacheAutomatic::Default;
 };
 
-[[nodiscard]] bool parse_openai_prompt_cache_breakpoint(const nlohmann::json& value,
+[[nodiscard]] bool parse_openai_prompt_cache_breakpoint(const RequestJson& value,
                                                         std::string_view param);
-[[nodiscard]] OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const nlohmann::json& body);
+[[nodiscard]] OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const RequestJson& body);
 void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCachePolicy policy);
 
 std::string make_models_list(const std::string& model_id, std::int64_t created,

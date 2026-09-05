@@ -447,7 +447,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.metrics.speculative_accepted_per_position =
         std::move(result.speculative.accepted_per_position);
 
-    outcome.tool_calls = std::move(result.tool_calls);
+    outcome.tool_calls      = std::move(result.tool_calls);
+    outcome.tool_call_parse = result.tool_call_parse;
     return outcome;
 }
 

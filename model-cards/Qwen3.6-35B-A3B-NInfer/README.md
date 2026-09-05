@@ -121,7 +121,7 @@ hf download neroued/Qwen3.6-35B-A3B-NInfer \
   --lm-head-draft
 ```
 
-For text-only DFlash, the measured block-8 configuration uses seven draft tokens:
+For DFlash, the measured block-8 configuration uses seven draft tokens:
 
 ```bash
 ./build/apps/ninfer models/qwen3_6_35b_a3b.ninfer \
@@ -135,8 +135,8 @@ For text-only DFlash, the measured block-8 configuration uses seven draft tokens
 
 `--draft-tokens` accepts `1..5` for MTP and `1..15` for DFlash. The DFlash value `7` is the
 measured block-length-eight profile; `15` uses the companion's full native 16-position block. MTP
-and DFlash are mutually exclusive. DFlash is text-only and cannot be combined with `--vision`; use
-a separate non-DFlash process for image or video requests.
+and DFlash are mutually exclusive backend selections. DFlash may be combined with `--vision` for
+image or video prompts; it accelerates generated-text decode, not Vision encode or target prefill.
 
 For images, videos, and structured chat history, see the
 [CLI guide](https://github.com/Neroued/ninfer/blob/master/docs/cli.md).
@@ -175,7 +175,8 @@ The artifact supports:
 - text generation in thinking and non-thinking modes;
 - image, multi-image, video, and mixed multimodal messages;
 - MTP speculative decoding with draft windows from one to five;
-- text-only DFlash speculative decoding with draft windows from one to fifteen;
+- DFlash speculative decoding for Text and image/video Vision prompts with draft windows from one
+  to fifteen;
 - BF16, INT8, FP8, NVFP4, and K8V4 KV cache;
 - CUDA Graph decode and compatible-prefix reuse;
 - startup-bounded small-scale concurrent serving with true batched decode;

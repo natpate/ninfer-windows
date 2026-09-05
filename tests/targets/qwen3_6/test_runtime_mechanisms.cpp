@@ -9,6 +9,7 @@
 #include "targets/qwen3_6/impl/runtime/rebuild_work.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <string_view>
@@ -359,6 +360,28 @@ void test_prefix_identity() {
            "incremental generated-token shortlist diverged from a full rebuild");
     expect(q36::detail::prefix_matches(original, ledger, resident, ledger.size()),
            "generated multimodal continuation identity");
+
+    q36::PreparedPromptData accepted_rebuild = identity_prompt();
+    const std::array<ninfer::TokenId, 3> proposed{20, 21, 22};
+    const std::span<const ninfer::TokenId> accepted(proposed.data(), 2);
+    std::vector<ninfer::TokenId> accepted_ledger = accepted_rebuild.token_ids;
+    accepted_ledger.insert(accepted_ledger.end(), accepted.begin(), accepted.end());
+    q36::detail::ResidentPrefixIdentity accepted_resident;
+    q36::detail::PrefixShortlistDigests accepted_digests;
+    accepted_resident.assign(accepted_rebuild);
+    accepted_digests.assign(accepted_rebuild);
+    accepted_resident.append_generated(accepted.size(), accepted_rebuild.rope_delta, 1);
+    accepted_digests.append_generated(accepted, accepted_rebuild.rope_delta, 1);
+    append_text_token(accepted_rebuild, accepted[0], 4);
+    append_text_token(accepted_rebuild, accepted[1], 5);
+    accepted_rebuild.identity.rewrite_execution_frontiers = {5};
+    q36::detail::PrefixShortlistDigests rebuilt_accepted_digests;
+    rebuilt_accepted_digests.assign(accepted_rebuild);
+    expect(q36::detail::prefix_matches(accepted_rebuild, accepted_ledger, accepted_resident,
+                                       accepted_ledger.size()) &&
+               accepted_digests.at(accepted_ledger.size()) ==
+                   rebuilt_accepted_digests.at(accepted_ledger.size()),
+           "accepted generated prefix and rebuilt history formed different cache identities");
 
     const q36::PreparedPromptData prompt_only = identity_prompt();
     resident.truncate(prompt_only.token_ids.size());

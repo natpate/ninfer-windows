@@ -849,6 +849,7 @@ private:
         result.content                 = std::move(request->content);
         result.reasoning               = std::move(request->reasoning);
         result.tool_calls              = request->output.take_tool_calls();
+        result.tool_call_parse         = request->output.tool_call_parse_diagnostics();
         result.reasoning_tokens        = request->output.reasoning_tokens();
         result.finish_reason           = reason;
         result.matched_stop_string     = request->output.matched_stop_string();
@@ -1112,13 +1113,17 @@ private:
                     row_tokens, request->budget->remaining(), request->budget->limit_reason());
                 if (decision.accepted_tokens == 0 || decision.accepted_tokens > count ||
                     (!decision.finished() && decision.accepted_tokens != count) ||
-                    (decision.finished() && decision.continuation != ContinuationAction::Decode)) {
+                    (decision.finished() && decision.continuation != ContinuationAction::Decode) ||
+                    (decision.prefix_execution_split_after &&
+                     (*decision.prefix_execution_split_after == 0 ||
+                      *decision.prefix_execution_split_after > decision.accepted_tokens))) {
                     throw std::logic_error("output policy returned an invalid licensed prefix");
                 }
                 decisions[row] = CommitDecision{
-                    .accepted_tokens = decision.accepted_tokens,
-                    .terminal        = decision.finished(),
-                    .cancelled       = false,
+                    .accepted_tokens              = decision.accepted_tokens,
+                    .terminal                     = decision.finished(),
+                    .cancelled                    = false,
+                    .prefix_execution_split_after = decision.prefix_execution_split_after,
                 };
                 finish_reasons[row] = decision.finish_reason;
                 continuations[row]  = decision.continuation;
@@ -1808,6 +1813,7 @@ private:
         }
 
         std::array<std::size_t, kMaximumConcurrency> generated_sizes{};
+        std::array<std::optional<std::uint32_t>, kMaximumConcurrency> prefix_execution_splits{};
         bool generated_staged         = false;
         const auto rollback_generated = [&]() noexcept {
             if (!generated_staged) { return; }
@@ -1843,9 +1849,13 @@ private:
                 const OutputDecision decision =
                     request->output.preview_control(tokens, request->budget->remaining());
                 if (decision.accepted_tokens != membership.row_stride || decision.finished() ||
-                    decision.continuation != ContinuationAction::Decode) {
+                    decision.continuation != ContinuationAction::Decode ||
+                    (decision.prefix_execution_split_after &&
+                     (*decision.prefix_execution_split_after == 0 ||
+                      *decision.prefix_execution_split_after > decision.accepted_tokens))) {
                     throw std::logic_error("target control preview returned an invalid decision");
                 }
+                prefix_execution_splits[row] = decision.prefix_execution_split_after;
                 if (request->generated.size() > request->generated.capacity() ||
                     tokens.size() > request->generated.capacity() - request->generated.size()) {
                     throw std::logic_error(
@@ -1857,6 +1867,8 @@ private:
             ProgramCallScope program_call(*this);
             const runtime::ExecutionTiming timing = instance_.program->append_forced_tokens(
                 membership.sequence_span(), membership.tokens, membership.row_stride,
+                std::span<const std::optional<std::uint32_t>>(prefix_execution_splits.data(),
+                                                              membership.size),
                 &program_call.failed_timing());
             program_call.finish(timing);
             phase.resume_range();

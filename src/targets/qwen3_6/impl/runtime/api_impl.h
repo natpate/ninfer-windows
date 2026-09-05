@@ -517,8 +517,10 @@ PendingBatch<Variant> Program<Variant>::decode(std::span<const SequenceHandle<Va
 template <>
 runtime::ExecutionTiming Program<Variant>::append_forced_tokens(
     std::span<const SequenceHandle<Variant>> sequences, std::span<const TokenId> row_major_tokens,
-    std::uint32_t row_stride, runtime::ExecutionTiming* failed_timing) {
-    return impl_->append_forced_tokens(sequences, row_major_tokens, row_stride, failed_timing);
+    std::uint32_t row_stride, std::span<const std::optional<std::uint32_t>> prefix_execution_splits,
+    runtime::ExecutionTiming* failed_timing) {
+    return impl_->append_forced_tokens(sequences, row_major_tokens, row_stride,
+                                       prefix_execution_splits, failed_timing);
 }
 
 template <>

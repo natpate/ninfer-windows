@@ -407,8 +407,27 @@ public:
     }
 
     [[nodiscard]] bool
-    can_release_after_fork_abort(StateImageHandle source, StateImageHandle destination,
-                                 std::uint32_t released_checkpoint_references) const {
+    can_release_source_after_fork_abort(StateImageHandle source, StateImageHandle destination,
+                                        std::uint32_t released_checkpoint_references) const {
+        if (!can_abort_fork(source, destination)) { return false; }
+        const Object& object = require(source);
+        if (released_checkpoint_references > object.checkpoint_references) { return false; }
+        if (object.checkpoint_references != released_checkpoint_references) { return true; }
+        // abort_fork releases exactly the pin represented by this binding. Any other source pin
+        // still protects the object and therefore prevents terminal owner settlement.
+        if (object.source_pins != 1 || object.destination_pinned || has_pending_replica(object)) {
+            return false;
+        }
+        if (object.host_slot) {
+            if (host_ == nullptr) { return false; }
+            (void)host_->view(*object.host_slot);
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool
+    can_release_destination_after_fork_abort(StateImageHandle source, StateImageHandle destination,
+                                             std::uint32_t released_checkpoint_references) const {
         if (!can_abort_fork(source, destination)) { return false; }
         const Object& object = require(destination);
         if (object.checkpoint_references != released_checkpoint_references ||
@@ -759,10 +778,32 @@ inline StateImageTransfer::~StateImageTransfer() {
     if (owner_ != nullptr) { owner_->abort_transfer(std::move(*this)); }
 }
 
+enum class StateReadOwnership : std::uint8_t {
+    // The primary binding owns the direct StateImage lifetime.
+    Primary,
+    // The same active lineage retains the source through an optional checkpoint reference.
+    LineageCheckpoint,
+    // A retained private or shared owner outside this active lineage retains the source.
+    ExternalOwner,
+};
+
 struct ActiveStateBinding {
     StateImageHandle read;
     StateImageHandle write;
-    bool fork_pending = false;
+    bool fork_pending                 = false;
+    StateReadOwnership read_ownership = StateReadOwnership::Primary;
+
+    // A non-primary read source is pinned only for the pending Fork. Its allocation belongs to a
+    // surviving same-lineage checkpoint or external owner, never to the primary binding.
+    [[nodiscard]] bool borrows_read() const noexcept {
+        return read_ownership != StateReadOwnership::Primary;
+    }
+
+    // An external owner can be a retained private endpoint whose lifetime has no StateImage
+    // checkpoint reference, so refcount zero alone does not authorize this sequence to release it.
+    [[nodiscard]] bool read_has_external_owner() const noexcept {
+        return read_ownership == StateReadOwnership::ExternalOwner;
+    }
 };
 
 } // namespace ninfer::targets::qwen3_6::detail

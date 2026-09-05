@@ -1,9 +1,9 @@
 #pragma once
 
 #include "serve/generation_service.h"
+#include "serve/request_json.h"
 
 #include <httplib.h>
-#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -73,7 +73,7 @@ void render_and_write(SseTransport& transport, Render&& render) {
     } catch (const std::exception& exception) { throw ResponseRenderFailure(exception.what()); }
 }
 
-nlohmann::json parse_json_body(const httplib::Request& request);
+RequestJson parse_json_body(const httplib::Request& request);
 [[nodiscard]] bool client_disconnected(const httplib::Request& request);
 
 void prepare_sse_response(httplib::Response& response);

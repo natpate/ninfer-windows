@@ -82,6 +82,18 @@ void test_state_store(ninfer::DeviceContext& device) {
     expect(selectors.source >= 0 && selectors.destination >= 0 &&
                selectors.source != selectors.destination,
            "fork resolves distinct physical selectors");
+    expect(images.can_release_source_after_fork_abort(*source, *destination, 0) &&
+               images.can_release_destination_after_fork_abort(*source, *destination, 0),
+           "fork release preflight accounts for its source and destination pins");
+    const auto concurrent_destination = images.reserve_destination();
+    expect(concurrent_destination.has_value(), "concurrent fork destination reservation");
+    (void)images.begin_fork(*source, *concurrent_destination);
+    expect(!images.can_release_source_after_fork_abort(*source, *destination, 0),
+           "fork release preflight preserves independent source pins");
+    images.abort_fork(*source, *concurrent_destination);
+    expect(images.release(*concurrent_destination), "concurrent fork destination release");
+    expect(images.can_release_source_after_fork_abort(*source, *destination, 0),
+           "fork release preflight accepts the final source pin");
     expect(!images.release(*source) && !images.release(*destination),
            "fork pins both logical images");
     images.commit_fork(*source, *destination);

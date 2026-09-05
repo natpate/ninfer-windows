@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -28,6 +29,8 @@ struct OperationalRecord {
 [[nodiscard]] OperationalRecord render_request_rejected(const RequestRejectionLogContext& context);
 [[nodiscard]] OperationalRecord render_request_done(const RequestLogContext& context,
                                                     const GenerationOutcome& outcome);
+[[nodiscard]] std::optional<OperationalRecord>
+render_tool_call_fallback(const RequestLogContext& context, const GenerationOutcome& outcome);
 [[nodiscard]] OperationalRecord render_request_failure(const RequestLogContext& context,
                                                        const RequestFailure& failure);
 [[nodiscard]] OperationalRecord render_response_failure(std::uint64_t request_id,

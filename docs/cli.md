@@ -79,8 +79,7 @@ output capacity for the inserted suffix and the answer:
 GPU residency is frozen when the Engine starts:
 
 - no `--spec` omits MTP/DFlash weights and state and the optimized proposal head;
-- `--spec mtp` loads only MTP, while `--spec dflash` loads only the 35B-A3B text-only DFlash
-  backend;
+- `--spec mtp` loads only MTP, while `--spec dflash` loads only the 35B-A3B DFlash backend;
 - a speculative backend with the full proposal head omits the optimized proposal head;
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
@@ -88,9 +87,11 @@ GPU residency is frozen when the Engine starts:
 - the one-request CLI uses root-only context mode, so it does not reserve an extra Device
   checkpoint StateImage or capture a continuation that no later request could consume.
 
-The complete `.ninfer` inventory is still validated. These choices are not lazy loading: a
-text-only Engine rejects media and cannot enable Vision later. DFlash and Vision are mutually
-exclusive. The default speculative and Vision settings produce the smallest resident profile.
+The complete `.ninfer` inventory is still validated. These choices are not lazy loading: an Engine
+started without Vision rejects media and cannot enable Vision later. DFlash and Vision may be
+enabled together; DFlash applies to generated-text decode after multimodal prefill and does not
+accelerate Vision encode. The default speculative and Vision settings produce the smallest resident
+profile.
 
 ## Structured messages
 
@@ -154,8 +155,8 @@ long-decode, and long-context inputs.
 ## Speculative decoding
 
 Speculative decoding is disabled by default. Select MTP with one to five draft positions, or the
-35B-A3B text-only DFlash backend with one to fifteen. `--lm-head-draft` selects the optimized
-proposal head and requires a selected backend:
+35B-A3B DFlash backend with one to fifteen. DFlash may be combined with `--vision`.
+`--lm-head-draft` selects the optimized proposal head and requires a selected backend:
 
 ```bash
 ./build/apps/ninfer models/qwen3_6_35b_a3b.ninfer \

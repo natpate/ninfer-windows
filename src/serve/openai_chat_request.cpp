@@ -13,7 +13,7 @@
 namespace ninfer::serve {
 namespace {
 
-using Json = nlohmann::json;
+using Json = RequestJson;
 
 void require_object(const Json& value, const char* message, const char* param = nullptr) {
     if (!value.is_object()) { bad_request(message, param == nullptr ? "" : param); }

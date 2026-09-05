@@ -35,6 +35,10 @@ struct PhysicalResources {
 };
 
 struct PhysicalDemand {
+    // Capacity owned by the active request through completion. A read-only State/KV source whose
+    // lifetime remains with another surviving owner is part of global physical occupancy, not
+    // this entitlement; an exclusive optional checkpoint in the active lineage is counted once
+    // through that checkpoint ownership instead of through the primary binding.
     PhysicalResources active_entitlement;
     PhysicalResources reservation_added;
     PhysicalResources reservation_credit;

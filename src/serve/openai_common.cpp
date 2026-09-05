@@ -38,12 +38,12 @@ std::string responses_identifier(std::string_view prefix) {
 
 using Json = nlohmann::json;
 
-bool parse_openai_prompt_cache_breakpoint(const Json& value, std::string_view param) {
+bool parse_openai_prompt_cache_breakpoint(const RequestJson& value, std::string_view param) {
     if (!value.contains("prompt_cache_breakpoint") ||
         value.at("prompt_cache_breakpoint").is_null()) {
         return false;
     }
-    const Json& breakpoint = value.at("prompt_cache_breakpoint");
+    const RequestJson& breakpoint = value.at("prompt_cache_breakpoint");
     if (!breakpoint.is_object() || !breakpoint.contains("mode") ||
         !breakpoint.at("mode").is_string() ||
         breakpoint.at("mode").get<std::string>() != "explicit") {
@@ -53,7 +53,7 @@ bool parse_openai_prompt_cache_breakpoint(const Json& value, std::string_view pa
     return true;
 }
 
-OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const Json& body) {
+OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const RequestJson& body) {
     auto require_string_hint = [&](const char* field, std::optional<std::size_t> maximum = {}) {
         if (!body.contains(field) || body.at(field).is_null()) { return; }
         if (!body.at(field).is_string()) {
@@ -84,7 +84,7 @@ OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const Json& body) {
     if (!body.contains("prompt_cache_options") || body.at("prompt_cache_options").is_null()) {
         return policy;
     }
-    const Json& options = body.at("prompt_cache_options");
+    const RequestJson& options = body.at("prompt_cache_options");
     if (!options.is_object()) {
         bad_request("prompt_cache_options must be an object", "prompt_cache_options");
     }
@@ -143,12 +143,13 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
 
     const bool automatic_enabled =
         policy.automatic != OpenAIPromptCacheAutomatic::Disabled && automatic_target != nullptr;
-    const bool automatic_merges_explicit = automatic_enabled && automatic_target->has_value();
-    const std::size_t explicit_write_slots =
-        !automatic_enabled || automatic_merges_explicit ? 4U : 3U;
-    const std::size_t first_selected = explicit_boundaries.size() > explicit_write_slots
-                                           ? explicit_boundaries.size() - explicit_write_slots
-                                           : 0U;
+    const bool automatic_merges_explicit   = automatic_enabled && automatic_target->has_value();
+    const std::size_t explicit_write_slots = !automatic_enabled || automatic_merges_explicit
+                                                 ? kMaximumExplicitPromptCacheMarkers
+                                                 : kMaximumExplicitPromptCacheMarkers - 1U;
+    const std::size_t first_selected       = explicit_boundaries.size() > explicit_write_slots
+                                                 ? explicit_boundaries.size() - explicit_write_slots
+                                                 : 0U;
     for (std::size_t index = 0; index < explicit_boundaries.size(); ++index) {
         if (index < first_selected) {
             explicit_boundaries[index]->reset();

@@ -918,9 +918,11 @@ public:
                                                runtime::ExecutionTiming* failed_timing = nullptr);
     // Advance each live sequence with its exact target-owned token row. This does not sample or
     // advance sampler RNG/occurrence state; callers own output publication and budget accounting.
+    // Each optional execution split is relative to its row's forced-token span.
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle<Variant>> sequences,
                          std::span<const TokenId> row_major_tokens, std::uint32_t row_stride,
+                         std::span<const std::optional<std::uint32_t>> prefix_execution_splits,
                          runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] CommitResult<Variant>
     commit(PendingBatch<Variant>&& pending, std::span<const runtime::CommitDecision> decisions,

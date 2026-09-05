@@ -221,6 +221,13 @@ build-windows/apps/Release/ninfer-serve.exe
 See [the Windows guide](docs/windows.md) for complete setup instructions, vcpkg installation, and
 notes on the resulting DLL layout.
 
+## Startup notes
+
+GPU residency is fixed at process startup. `--spec` selects speculative decoding residency, and
+`--vision` independently selects Vision residency. Qwen3.6-35B-A3B DFlash can be combined with
+Vision; it accelerates generated-text decode after multimodal prefill, not Vision encode itself.
+
+
 ## Docker
 
 Build the runtime image on a host with the NVIDIA Container Toolkit:
@@ -375,7 +382,8 @@ All registered model IDs support:
 - OpenAI Responses Core, OpenAI Chat Completions, and Anthropic Messages, including streaming,
   tools, local response state, token counting, and usage accounting.
 
-The 35B-A3B target additionally supports text-only DFlash with draft windows from one to fifteen.
+The 35B-A3B target additionally supports DFlash with draft windows from one to fifteen for Text and
+image/video Vision prompts.
 
 The product boundary remains intentionally small:
 
@@ -407,6 +415,16 @@ capacities remain fixed for the process lifetime.
 - [Contributing](CONTRIBUTING.md)
 
 Run the relevant `--help` for the exact current option contract.
+
+## Support
+
+NInfer is a personal project that I develop out of interest. If you find it useful and would like
+to support its continued development, you can [support the project on Ko-fi](https://ko-fi.com/neroued).
+
+Support is entirely voluntary. It is not a purchase or investment and does not come with financial
+returns, promised services or features, or a role in project decisions. The project's direction,
+priorities, technical choices, and release schedule remain independently determined by the
+maintainer.
 
 ## License
 

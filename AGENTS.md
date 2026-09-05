@@ -110,7 +110,8 @@ a small set of explicitly registered checkpoint artifacts. The supported identit
 `qwen3.8-27b/nvfp4`, and `qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled
 for `sm_120a` and tuned and measured on NVIDIA GeForce RTX 5090. All identities execute Text,
 image/video Vision, MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the
-same public `.ninfer` Engine route; the 35B-A3B target additionally supports text-only DFlash.
+same public `.ninfer` Engine route; the 35B-A3B target additionally supports DFlash for both Text
+and image/video Vision prompts.
 
 The current workload is one GPU and one resident model instance with a startup-fixed one to eight
 active requests. The Engine forms one compact decode batch at every round boundary and uses bounded

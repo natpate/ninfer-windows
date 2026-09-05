@@ -19,6 +19,7 @@ using TokenId = std::int32_t;
 
 inline constexpr std::uint32_t kMaximumConcurrency               = 8;
 inline constexpr std::size_t kMaximumContextCacheSessionKeyBytes = 256;
+inline constexpr std::size_t kMaximumExplicitPromptCacheMarkers  = 4;
 // Aggregate encoded image/video payload retained by one prompt, independent of item count.
 inline constexpr std::size_t kMaximumPromptMediaBytes    = 256ULL << 20;
 inline constexpr std::size_t kDefaultMediaCacheBytes     = 1ULL << 30;
@@ -124,8 +125,8 @@ struct StartupObserver {
 
 struct ContextCacheOptions {
     // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
-    // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=C and L=2; Engine::options() returns those
-    // effective values.
+    // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2;
+    // Engine::options() returns those effective values.
     bool enabled = true;
     // Extra Device checkpoint StateImage slots H. Total Device StateImage capacity is C + H.
     std::optional<std::uint32_t> device_state_slots;
@@ -290,6 +291,48 @@ struct ToolCall {
 struct GeneratedToolCall {
     std::string name;
     std::string arguments_json;
+};
+
+// Terminal interpretation of model-origin tool-call markup. Parameter schemas guide JSON
+// normalization but do not validate the call; only a structure/identity failure can return a
+// complete marker region to ordinary content.
+enum class ToolCallParseFallbackReason : std::uint8_t {
+    None,
+    MalformedStructure,
+    DuplicateParameter,
+    InvalidToolName,
+    UndeclaredTool,
+    TrailingContent,
+};
+
+[[nodiscard]] inline constexpr const char*
+tool_call_parse_fallback_reason_name(ToolCallParseFallbackReason reason) noexcept {
+    switch (reason) {
+    case ToolCallParseFallbackReason::None:
+        return "none";
+    case ToolCallParseFallbackReason::MalformedStructure:
+        return "malformed_structure";
+    case ToolCallParseFallbackReason::DuplicateParameter:
+        return "duplicate_parameter";
+    case ToolCallParseFallbackReason::InvalidToolName:
+        return "invalid_tool_name";
+    case ToolCallParseFallbackReason::UndeclaredTool:
+        return "undeclared_tool";
+    case ToolCallParseFallbackReason::TrailingContent:
+        return "trailing_content";
+    }
+    return "malformed_structure";
+}
+
+struct ToolCallParseDiagnostics {
+    bool marker_seen                            = false;
+    std::uint32_t structured_call_count         = 0;
+    std::uint32_t empty_arguments_omitted       = 0;
+    std::uint32_t schema_mismatch_arguments     = 0;
+    ToolCallParseFallbackReason fallback_reason = ToolCallParseFallbackReason::None;
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const ToolCallParseDiagnostics&, const ToolCallParseDiagnostics&) noexcept = default;
 };
 
 // Wire-independent conversation authority. Protocol adapters preserve these roles and their
@@ -705,6 +748,7 @@ struct GenerationResult {
     std::string content;
     std::string reasoning;
     std::vector<GeneratedToolCall> tool_calls;
+    ToolCallParseDiagnostics tool_call_parse;
     std::uint32_t reasoning_tokens = 0;
     FinishReason finish_reason     = FinishReason::None;
     std::optional<std::string> matched_stop_string;

@@ -1355,4 +1355,18 @@ PrefillChunkResult TextContext::prefill_chunk(const qwen3_6::PreparedPromptData&
                         finalize_at_end);
 }
 
+PrefillChunkResult TextContext::prefill_chunk(const qwen3_6::PreparedPromptData& input,
+                                              std::uint32_t begin, std::uint32_t nominal_length,
+                                              VisionPrefillSession& vision, bool finalize_at_end,
+                                              DFlashFeatureSink& sink) {
+    if (begin >= input.token_ids.size() || nominal_length == 0 ||
+        nominal_length > input.token_ids.size() - begin) {
+        throw std::invalid_argument("multimodal prefill chunk is outside the prompt");
+    }
+    const std::span<const int> tokens(input.token_ids);
+    const MultimodalPrefill multimodal{tokens, input.positions, &vision, begin, input.rope_delta};
+    return prefill_impl(tokens.subspan(begin, nominal_length), nullptr, &multimodal, sink,
+                        finalize_at_end);
+}
+
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

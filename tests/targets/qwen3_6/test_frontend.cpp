@@ -1647,13 +1647,14 @@ int test_structured_tool_output() {
     input.messages.push_back(std::move(message));
     input.options.enable_thinking = false;
     input.options.tool_jsons.push_back(
-        R"({"type":"function","function":{"name":"TaskUpdate","parameters":{"type":"object","properties":{"taskId":{"type":"string"}}}}})");
+        R"({"type":"function","function":{"name":"TaskUpdate","parameters":{"type":"object","properties":{"taskId":{"type":"string"},"enabled":{"type":"boolean"},"count":{"type":"integer"}},"required":["taskId"]}}})");
     auto prompt = frontend.prepare(std::move(input));
     auto session =
         frontend.make_output_session(prompt, {}, ninfer::OutputOptions{.tool_name_max_length = 64});
 
     const std::string generated =
         "Calling.  \n<tool_call>\n<function=TaskUpdate>\n<parameter=taskId>\n1\n"
+        "</parameter>\n<parameter=enabled>\n</parameter>\n<parameter=count>\nmany\n"
         "</parameter>\n</function>\n</tool_call>";
     const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(generated);
     const auto decision = session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size()),
@@ -1666,10 +1667,20 @@ int test_structured_tool_output() {
     const std::vector<ninfer::GeneratedToolCall> calls = session.take_tool_calls();
     failures += check(calls.size() == 1 && calls.front().name == "TaskUpdate",
                       "frontend did not publish the structured tool call");
+    failures += check(session.tool_call_parse_diagnostics() ==
+                          ninfer::ToolCallParseDiagnostics{
+                              .marker_seen               = true,
+                              .structured_call_count     = 1,
+                              .empty_arguments_omitted   = 1,
+                              .schema_mismatch_arguments = 1,
+                              .fallback_reason = ninfer::ToolCallParseFallbackReason::None,
+                          },
+                      "frontend did not retain tool-call parse diagnostics");
     if (!calls.empty()) {
         const nlohmann::json arguments = nlohmann::json::parse(calls.front().arguments_json);
-        failures += check(arguments.at("taskId").is_string() && arguments.at("taskId") == "1",
-                          "frontend changed the declared string argument type");
+        failures += check(arguments.at("taskId").is_string() && arguments.at("taskId") == "1" &&
+                              !arguments.contains("enabled") && arguments.at("count") == "many",
+                          "frontend did not preserve normalized tool arguments");
     }
     return failures;
 }
@@ -1684,13 +1695,27 @@ int test_reasoning_split(const Frontend& frontend) {
     input.options.continuation    = ninfer::PromptContinuationMode::NewAssistantTurn;
     input.options.enable_thinking = true;
     auto prompt                   = frontend.prepare(std::move(input));
-    auto session                  = frontend.make_output_session(prompt, {});
+
+    auto canonical_session = frontend.make_output_session(prompt, {});
+    const std::vector<ninfer::TokenId> canonical_tokens =
+        fixture_tokenizer().encode("thought\n</think>\n\n");
+    const auto canonical = canonical_session.preview_model(
+        canonical_tokens, static_cast<std::uint32_t>(canonical_tokens.size() + 1U),
+        ninfer::FinishReason::OutputLimit);
+    int failures =
+        check(canonical.accepted_tokens == canonical_tokens.size() && !canonical.finished() &&
+                  canonical.prefix_execution_split_after == canonical_tokens.size(),
+              "canonical reasoning close did not publish its exact token execution frontier");
+    (void)canonical_session.commit_preview();
+
+    auto session = frontend.make_output_session(prompt, {});
     const std::array<ninfer::TokenId, 2> tokens{3, 4};
     const auto decision = session.preview_model(tokens, 2, ninfer::FinishReason::OutputLimit);
-    int failures        = check(decision.accepted_tokens == 2 &&
-                                    decision.finish_reason == ninfer::FinishReason::OutputLimit,
-                                "reasoning output did not finish at the requested token limit");
-    const auto output   = session.commit_preview();
+    failures += check(decision.accepted_tokens == 2 &&
+                          decision.finish_reason == ninfer::FinishReason::OutputLimit &&
+                          !decision.prefix_execution_split_after,
+                      "reasoning close inside a mixed token produced an execution frontier");
+    const auto output = session.commit_preview();
     failures += check(channel_text(output, ninfer::OutputChannel::Reasoning) == "thought",
                       "reasoning channel did not remove the close marker");
     failures += check(channel_text(output, ninfer::OutputChannel::Content) == "answer",
@@ -1746,7 +1771,8 @@ int test_thinking_budget_control(const Frontend& frontend) {
 
     const auto control_decision = session.preview_control(control, 18);
     failures +=
-        check(control_decision.accepted_tokens == control.size() && !control_decision.finished(),
+        check(control_decision.accepted_tokens == control.size() && !control_decision.finished() &&
+                  control_decision.prefix_execution_split_after == control.size(),
               "canonical thinking control was not accepted atomically");
     const auto control_output = session.commit_preview();
     failures += check(channel_text(control_output, ninfer::OutputChannel::Reasoning) ==

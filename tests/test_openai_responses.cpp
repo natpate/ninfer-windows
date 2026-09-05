@@ -17,7 +17,7 @@
 
 namespace {
 
-using Json = nlohmann::json;
+using Json = ninfer::serve::RequestJson;
 using namespace ninfer::serve;
 
 int check(bool condition, const std::string& message) {
@@ -392,8 +392,10 @@ int test_response_output_history_round_trip() {
     outcome.reasoning     = "I should inspect both paths.";
     outcome.text          = "Let me check:";
     outcome.finish_reason = ninfer::FinishReason::StopToken;
-    outcome.tool_calls.push_back(
-        ninfer::GeneratedToolCall{.name = "read_file", .arguments_json = R"({"path":"a"})"});
+    outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
+        .name = "Edit",
+        .arguments_json =
+            R"({"file_path":"/tmp/probe.cpp","old_string":"old","new_string":"new"})"});
     outcome.tool_calls.push_back(
         ninfer::GeneratedToolCall{.name = "read_file", .arguments_json = R"({"path":"b"})"});
     const BuiltOpenAIResponse built =
@@ -418,6 +420,14 @@ int test_response_output_history_round_trip() {
         check(built.output_history.size() == 1 && replay.prompt.input_turns.size() == 5 &&
                   same_assistant_turn(replay.prompt.input_turns[1], built.output_history[0]),
               "Responses output Items did not round-trip to their stored assistant history");
+    const auto edit_item =
+        std::find_if(built.output_items.begin(), built.output_items.end(), [](const Json& item) {
+            return item.at("type") == "function_call" && item.at("name") == "Edit";
+        });
+    failures += check(
+        edit_item != built.output_items.end() &&
+            !Json::parse(edit_item->at("arguments").get<std::string>()).contains("replace_all"),
+        "Responses output changed an omitted optional tool argument");
 
     GenerationOutcome incomplete;
     incomplete.reasoning     = "unfinished reasoning";
@@ -526,6 +536,18 @@ int test_tools_and_effective_subset() {
     failures += check(disabled.prompt.generation.tool_choice.mode == ToolChoiceMode::None &&
                           !disabled.prompt.generation.uses_tools(),
                       "tool_choice none disables generation tools without deleting their echo");
+
+    const Json ordered = Json::parse(
+        R"({"model":"m","input":"probe","tools":[{"type":"function","name":"probe","parameters":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer"}}}}]})");
+    const OpenAIResponsesCreateRequest ordered_request =
+        parse_openai_responses_create_request(ordered, limits());
+    const ninfer::PromptInput ordered_prompt =
+        to_prompt_input(ordered_request.prompt.generation, ResolvedPromptSemantics{}, {});
+    failures += check(
+        ordered_prompt.options.tool_jsons.size() == 1 &&
+            ordered_prompt.options.tool_jsons.front() ==
+                R"({"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer"}}},"strict":false}})",
+        "OpenAI Responses changed tool-schema member order before PromptInput");
     return failures;
 }
 
@@ -952,8 +974,8 @@ int test_input_tokens_uses_shared_state_path() {
     failures += check(resolved.generation.tools.size() == 1 &&
                           resolved.generation.tools[0].name == "mcp__clock__now",
                       "input token counting uses the namespace tool translation path");
-    failures += check(Json::parse(make_openai_response_input_tokens_body(9)) ==
-                          Json{{"object", "response.input_tokens"}, {"input_tokens", 9}},
+    failures += check(nlohmann::json::parse(make_openai_response_input_tokens_body(9)) ==
+                          nlohmann::json{{"object", "response.input_tokens"}, {"input_tokens", 9}},
                       "input token count response shape");
     return failures;
 }

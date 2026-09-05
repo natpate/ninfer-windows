@@ -10,11 +10,12 @@
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
 
-using Json         = nlohmann::json;
-using Contract     = ToolCallOutputContract;
-using DecodePolicy = Contract::DecodePolicy;
-using SchemaType   = Contract::SchemaType;
-using TypeSet      = Contract::TypeSet;
+using Json                = nlohmann::json;
+using Contract            = ToolCallOutputContract;
+using FallbackReason      = ToolCallParseFallbackReason;
+using NormalizationPolicy = Contract::NormalizationPolicy;
+using SchemaType          = Contract::SchemaType;
+using TypeSet             = Contract::TypeSet;
 
 constexpr std::string_view kToolOpen      = "<tool_call>";
 constexpr std::string_view kToolClose     = "</tool_call>";
@@ -41,6 +42,17 @@ enum class JsonValueKind : std::uint8_t {
     String,
     Object,
     Array,
+};
+
+enum class ParameterNormalization : std::uint8_t {
+    Emitted,
+    Omitted,
+    SchemaMismatch,
+};
+
+struct NormalizedParameter {
+    ParameterNormalization disposition = ParameterNormalization::Emitted;
+    std::string json_value;
 };
 
 constexpr bool is_format_whitespace(char byte) {
@@ -171,7 +183,7 @@ Contract::Tool compile_tool_contract(const Json& definition) {
         Contract::Parameter parameter;
         parameter.name = parameter_name;
         if (compile_schema_types(property, parameter.types)) {
-            parameter.policy = DecodePolicy::DeclaredTypes;
+            parameter.policy = NormalizationPolicy::DeclaredTypes;
         }
         contract.parameters.push_back(std::move(parameter));
     }
@@ -360,47 +372,39 @@ bool admits_value(TypeSet types, JsonValueKind kind) {
 
 std::string encode_json_string(std::string_view value) { return Json(std::string(value)).dump(); }
 
-bool decode_declared_parameter(std::string_view encoded_value, TypeSet types,
-                               std::string& json_value) {
+NormalizedParameter normalize_declared_parameter(std::string_view encoded_value, TypeSet types) {
     const std::string_view framed = remove_parameter_framing_newlines(encoded_value);
     if (admits_type(types, SchemaType::String)) {
-        json_value = encode_json_string(framed);
-        return true;
+        return {.json_value = encode_json_string(framed)};
     }
 
     const std::string_view value = trim_format_whitespace(framed);
+    if (value.empty()) { return {.disposition = ParameterNormalization::Omitted}; }
+
     JsonValueKind kind;
     if (classify_json_value(value, kind)) {
-        if (!admits_value(types, kind)) { return false; }
-        json_value = std::string(value);
-        return true;
+        return {.disposition = admits_value(types, kind) ? ParameterNormalization::Emitted
+                                                         : ParameterNormalization::SchemaMismatch,
+                .json_value  = std::string(value)};
     }
 
-    if (!admits_type(types, SchemaType::Boolean)) { return false; }
-    if (ascii_case_equal(value, "true")) {
-        json_value = "true";
-        return true;
+    if (admits_type(types, SchemaType::Boolean)) {
+        if (ascii_case_equal(value, "true")) { return {.json_value = "true"}; }
+        if (ascii_case_equal(value, "false")) { return {.json_value = "false"}; }
     }
-    if (ascii_case_equal(value, "false")) {
-        json_value = "false";
-        return true;
-    }
-    return false;
+    return {.disposition = ParameterNormalization::SchemaMismatch,
+            .json_value  = encode_json_string(framed)};
 }
 
-bool decode_parameter(std::string_view encoded_value, const Contract::Parameter* parameter,
-                      std::string& json_value) {
-    if (parameter != nullptr && parameter->policy == DecodePolicy::DeclaredTypes) {
-        return decode_declared_parameter(encoded_value, parameter->types, json_value);
+NormalizedParameter normalize_parameter(std::string_view encoded_value,
+                                        const Contract::Parameter* parameter) {
+    if (parameter != nullptr && parameter->policy == NormalizationPolicy::DeclaredTypes) {
+        return normalize_declared_parameter(encoded_value, parameter->types);
     }
 
     const std::string_view value = trim_format_whitespace(encoded_value);
-    if (Json::accept(value.begin(), value.end())) {
-        json_value = std::string(value);
-    } else {
-        json_value = encode_json_string(value);
-    }
-    return true;
+    if (Json::accept(value.begin(), value.end())) { return {.json_value = std::string(value)}; }
+    return {.json_value = encode_json_string(value)};
 }
 
 class QwenToolRegionParser {
@@ -409,14 +413,21 @@ public:
                          const Contract& contract)
         : text_(text), max_name_length_(max_name_length), contract_(contract) {}
 
-    bool parse(std::vector<RawToolCall>& calls) const {
+    FallbackReason parse(std::vector<RawToolCall>& calls) const {
         std::size_t pos = 0;
         for (;;) {
             skip_format_whitespace(text_, pos);
-            if (pos == text_.size()) { return !calls.empty(); }
+            if (pos == text_.size()) {
+                return calls.empty() ? FallbackReason::MalformedStructure : FallbackReason::None;
+            }
+            if (!starts_with_at(text_, pos, kToolOpen)) {
+                return calls.empty() ? FallbackReason::MalformedStructure
+                                     : FallbackReason::TrailingContent;
+            }
 
             RawToolCall call;
-            if (!parse_tool_call(pos, call)) { return false; }
+            const FallbackReason failure = parse_tool_call(pos, call);
+            if (failure != FallbackReason::None) { return failure; }
             calls.push_back(std::move(call));
         }
     }
@@ -428,52 +439,62 @@ private:
         return true;
     }
 
-    bool parse_tool_call(std::size_t& pos, RawToolCall& call) const {
-        if (!consume(pos, kToolOpen)) { return false; }
+    FallbackReason parse_tool_call(std::size_t& pos, RawToolCall& call) const {
+        if (!consume(pos, kToolOpen)) { return FallbackReason::MalformedStructure; }
         skip_format_whitespace(text_, pos);
-        if (!parse_function(pos, call)) { return false; }
+        const FallbackReason failure = parse_function(pos, call);
+        if (failure != FallbackReason::None) { return failure; }
         skip_format_whitespace(text_, pos);
-        return consume(pos, kToolClose);
+        return consume(pos, kToolClose) ? FallbackReason::None : FallbackReason::MalformedStructure;
     }
 
-    bool parse_function(std::size_t& pos, RawToolCall& call) const {
-        if (!consume(pos, kFunctionOpen)) { return false; }
+    FallbackReason parse_function(std::size_t& pos, RawToolCall& call) const {
+        if (!consume(pos, kFunctionOpen)) { return FallbackReason::MalformedStructure; }
         const std::size_t name_begin = pos;
         const std::size_t name_end   = text_.find('>', name_begin);
-        if (name_end == std::string_view::npos || name_end == name_begin) { return false; }
+        if (name_end == std::string_view::npos || name_end == name_begin) {
+            return FallbackReason::InvalidToolName;
+        }
         call.name = text_.substr(name_begin, name_end - name_begin);
-        if (!valid_function_name(call.name, max_name_length_)) { return false; }
+        if (!valid_function_name(call.name, max_name_length_)) {
+            return FallbackReason::InvalidToolName;
+        }
         if (contract_.enforce_declared_names &&
             find_tool_contract(contract_, call.name) == nullptr) {
-            return false;
+            return FallbackReason::UndeclaredTool;
         }
         pos = name_end + 1;
 
         for (;;) {
             skip_format_whitespace(text_, pos);
-            if (consume(pos, kFunctionClose)) { return true; }
-            if (!parse_parameter(pos, call)) { return false; }
+            if (consume(pos, kFunctionClose)) { return FallbackReason::None; }
+            const FallbackReason failure = parse_parameter(pos, call);
+            if (failure != FallbackReason::None) { return failure; }
         }
     }
 
-    bool parse_parameter(std::size_t& pos, RawToolCall& call) const {
-        if (!consume(pos, kParamOpen)) { return false; }
+    FallbackReason parse_parameter(std::size_t& pos, RawToolCall& call) const {
+        if (!consume(pos, kParamOpen)) { return FallbackReason::MalformedStructure; }
         const std::size_t name_begin = pos;
         const std::size_t name_end   = text_.find('>', name_begin);
-        if (name_end == std::string_view::npos || name_end == name_begin) { return false; }
+        if (name_end == std::string_view::npos || name_end == name_begin) {
+            return FallbackReason::MalformedStructure;
+        }
         const std::string_view name = text_.substr(name_begin, name_end - name_begin);
         if (std::any_of(call.parameters.begin(), call.parameters.end(),
                         [&](const RawParameter& existing) { return existing.name == name; })) {
-            return false;
+            return FallbackReason::DuplicateParameter;
         }
 
         const std::size_t value_begin = name_end + 1;
         std::size_t value_end         = 0;
-        if (!find_parameter_close(value_begin, value_end)) { return false; }
+        if (!find_parameter_close(value_begin, value_end)) {
+            return FallbackReason::MalformedStructure;
+        }
         call.parameters.push_back(RawParameter{
             .name = name, .value = text_.substr(value_begin, value_end - value_begin)});
         pos = value_end + kParamClose.size();
-        return true;
+        return FallbackReason::None;
     }
 
     bool find_parameter_open_before(std::size_t scan, std::size_t limit,
@@ -519,36 +540,43 @@ private:
     const Contract& contract_;
 };
 
-bool decode_raw_tool_call(const RawToolCall& raw, const Contract& contract,
-                          GeneratedToolCall& decoded) {
+GeneratedToolCall normalize_raw_tool_call(const RawToolCall& raw, const Contract& contract,
+                                          ToolCallParseDiagnostics& diagnostics) {
     const Contract::Tool* tool = find_tool_contract(contract, raw.name);
-    if (contract.enforce_declared_names && tool == nullptr) { return false; }
-    if (tool != nullptr && !tool->unambiguous) { return false; }
+    if (tool != nullptr && !tool->unambiguous) { tool = nullptr; }
 
     std::string arguments = "{";
     bool first            = true;
     for (const RawParameter& raw_parameter : raw.parameters) {
         const Contract::Parameter* parameter =
             tool == nullptr ? nullptr : find_parameter_contract(*tool, raw_parameter.name);
-        std::string json_value;
-        if (!decode_parameter(raw_parameter.value, parameter, json_value)) { return false; }
+        NormalizedParameter normalized = normalize_parameter(raw_parameter.value, parameter);
+        if (tool != nullptr && parameter == nullptr) {
+            normalized.disposition = ParameterNormalization::SchemaMismatch;
+        }
+        if (normalized.disposition == ParameterNormalization::Omitted) {
+            ++diagnostics.empty_arguments_omitted;
+            continue;
+        }
+        if (normalized.disposition == ParameterNormalization::SchemaMismatch) {
+            ++diagnostics.schema_mismatch_arguments;
+        }
 
         if (!first) { arguments.push_back(','); }
         first = false;
         arguments += encode_json_string(raw_parameter.name);
         arguments.push_back(':');
-        arguments += json_value;
+        arguments += normalized.json_value;
     }
     arguments.push_back('}');
 
-    decoded.name           = std::string(raw.name);
-    decoded.arguments_json = std::move(arguments);
-    return true;
+    return GeneratedToolCall{.name = std::string(raw.name), .arguments_json = std::move(arguments)};
 }
 
-ParsedToolCallOutput fallback(const std::string& text) {
+ParsedToolCallOutput fallback(const std::string& text, ToolCallParseDiagnostics diagnostics = {}) {
     ParsedToolCallOutput out;
-    out.content = text;
+    out.content     = text;
+    out.diagnostics = diagnostics;
     return out;
 }
 
@@ -574,21 +602,25 @@ ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
     if (first == std::string::npos) { return fallback(text); }
 
     ParsedToolCallOutput out;
-    out.content = rtrim_format_whitespace(std::string_view(text).substr(0, first));
+    out.content                 = rtrim_format_whitespace(std::string_view(text).substr(0, first));
+    out.diagnostics.marker_seen = true;
 
     std::vector<RawToolCall> raw_calls;
     const std::string_view tool_region = std::string_view(text).substr(first);
     const QwenToolRegionParser parser(tool_region, max_tool_name_length, contract);
-    if (!parser.parse(raw_calls)) { return fallback(text); }
+    const FallbackReason failure = parser.parse(raw_calls);
+    if (failure != FallbackReason::None) {
+        out.diagnostics.fallback_reason = failure;
+        return fallback(text, out.diagnostics);
+    }
 
     out.tool_calls.reserve(raw_calls.size());
     for (const RawToolCall& raw : raw_calls) {
-        GeneratedToolCall decoded;
-        if (!decode_raw_tool_call(raw, contract, decoded)) { return fallback(text); }
-        out.tool_calls.push_back(std::move(decoded));
+        out.tool_calls.push_back(normalize_raw_tool_call(raw, contract, out.diagnostics));
     }
 
-    out.is_tool_call_response = true;
+    out.diagnostics.structured_call_count = static_cast<std::uint32_t>(out.tool_calls.size());
+    out.is_tool_call_response             = true;
     return out;
 }
 
@@ -652,7 +684,9 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
         trailing_whitespace_.clear();
         tool_region_.clear();
         marker_prefix_bytes_ = 0;
-        return Terminal{.content = {}, .tool_calls = std::move(parsed.tool_calls)};
+        return Terminal{.content     = {},
+                        .tool_calls  = std::move(parsed.tool_calls),
+                        .diagnostics = parsed.diagnostics};
     }
 
     std::string tail = std::move(trailing_whitespace_);
@@ -660,7 +694,8 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
     marker_prefix_bytes_ = 0;
     tail += tool_region_;
     tool_region_.clear();
-    return Terminal{.content = std::move(tail), .tool_calls = {}};
+    return Terminal{
+        .content = std::move(tail), .tool_calls = {}, .diagnostics = parsed.diagnostics};
 }
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

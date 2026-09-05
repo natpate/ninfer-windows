@@ -27,9 +27,9 @@ void set_socket_option(socket_t socket, int level, int option, const T& value) n
 
 } // namespace
 
-nlohmann::json parse_json_body(const httplib::Request& request) {
+RequestJson parse_json_body(const httplib::Request& request) {
     try {
-        return nlohmann::json::parse(request.body);
+        return RequestJson::parse(request.body);
     } catch (const std::exception&) { bad_request("request body is not valid JSON"); }
 }
 

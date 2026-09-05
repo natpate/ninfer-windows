@@ -299,6 +299,20 @@ OperationalRecord render_request_done(const RequestLogContext& context,
     return {.severity = OperationalSeverity::Info, .message = out.str()};
 }
 
+std::optional<OperationalRecord> render_tool_call_fallback(const RequestLogContext& context,
+                                                           const GenerationOutcome& outcome) {
+    const ninfer::ToolCallParseFallbackReason reason = outcome.tool_call_parse.fallback_reason;
+    if (!outcome.tool_call_parse.marker_seen ||
+        reason == ninfer::ToolCallParseFallbackReason::None) {
+        return std::nullopt;
+    }
+    return OperationalRecord{
+        .severity = OperationalSeverity::Warning,
+        .message  = "req#" + std::to_string(context.id) + " tool markup returned as text | " +
+                   pretty_code(ninfer::tool_call_parse_fallback_reason_name(reason)),
+    };
+}
+
 OperationalRecord render_request_failure(const RequestLogContext& context,
                                          const RequestFailure& failure) {
     std::ostringstream out;
@@ -403,6 +417,9 @@ void OperationalLog::request_rejected(const RequestRejectionLogContext& context)
 void OperationalLog::request_done(const RequestLogContext& context,
                                   const GenerationOutcome& outcome) const {
     write(render_request_done(context, outcome));
+    if (std::optional<OperationalRecord> fallback = render_tool_call_fallback(context, outcome)) {
+        write(std::move(*fallback));
+    }
 }
 
 void OperationalLog::request_failure(const RequestLogContext& context,

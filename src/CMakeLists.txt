@@ -359,7 +359,6 @@ if(NINFER_BUILD_SERVE)
     serve/openai_responses_request.cpp
     serve/openai_responses_state.cpp
     serve/openai_responses_response.cpp
-    serve/anthropic_thinking_signature.cpp
     serve/anthropic_messages_request.cpp
     serve/anthropic_messages_response.cpp
     serve/anthropic_messages_http.cpp

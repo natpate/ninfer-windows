@@ -77,6 +77,10 @@ struct DFlashDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> context_frontiers{};
     std::array<std::int32_t, kMaximumConcurrency> proposal_extents{};
     std::array<std::int32_t, kMaximumConcurrency> target_valid_columns{};
+    // DFlash uses logical positions for its own attention. Target verification carries a separate
+    // continuation RoPE position so multimodal rows retain their per-sequence rope_delta.
+    std::array<std::int32_t, kMaximumConcurrency * kDFlashDecodeMaximumWidth>
+        target_rope_positions{};
     std::array<std::int32_t, kMaximumConcurrency> text_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> dflash_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> active_lanes{};
@@ -254,6 +258,7 @@ struct DFlashDecodeState {
     Tensor context_frontiers;
     Tensor proposal_extents;
     Tensor target_valid_columns;
+    Tensor target_rope_positions;
     Tensor text_kv_table_rows;
     Tensor dflash_kv_table_rows;
     Tensor active_lanes;

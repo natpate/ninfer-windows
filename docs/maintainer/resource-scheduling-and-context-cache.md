@@ -157,6 +157,13 @@ Used_r(S)=
 同一个物理 allocation 被多个 checkpoints 或 address spaces 引用时只计一次。已经物化的容量计
 allocation，尚未物化但被保护的容量计 reservation；同一容量单位不能同时计入两项。
 
+全局物理占用与 owner-exclusive resources 是两个不同视图。前者直接来自 State/KV stores 的 unique
+allocations 与 concrete reservations；后者只表示单独移除一个 owner 时能够结算的资源。一个同时被
+private checkpoint 与 shared prefix 引用的 allocation 在全局占用中计一次，但在任一 owner 的 exclusive
+resources 中都不计。Owner-exclusive resources 可用于 eviction effect、ownership transfer 和 active
+entitlement 校验，不能用于判断一个 checkpoint 是否具有 resident replica；后者只能查询对应 physical
+store。
+
 每个稳定状态和 transition 中间状态都必须满足：
 
 \[
@@ -314,6 +321,22 @@ Program 的 exact verification 可以使用：
 
 Session key、marker、hash 和 prefix index 只缩小 candidate 集合，不证明命中。
 
+`rewrite_execution_frontiers` 也是 exact identity 的一部分。它记录 replay/root prefill 必须分段的 exact
+token frontiers，使重建路径采用与原生成路径一致的 execution decomposition；不能为了采用 endpoint 而忽略。
+当 NInfer 自己生成的 accepted output 形成可由历史 renderer 精确重建的边界时，所有权链固定为：
+
+```text
+Frontend detects the model-output reconstruction boundary
+  -> Engine transports relative accepted-prefix metadata
+  -> Program atomically commits resident identity and shortlist digest
+```
+
+Frontend 只在 canonical boundary 恰好结束于 token frontier 时发布 metadata，并让 preview rollback、stop
+truncation 和 speculative partial accept 服从同一个 accepted-prefix transaction。Program 把相对位置转换为
+resident absolute frontier，并与 token ledger、State/KV 和 backend state 一起提交；它不扫描输出文本。
+ResourceManager 不推断或放宽这个事实。这样未经客户端改写的 NInfer 输出可以继续采用 exact endpoint；客户端
+重排 tool JSON、补默认值或改写历史仍是不同的 rendered identity，只能匹配更早的合法 checkpoint。
+
 ### 4.6 Request cache participation
 
 每个请求在进入 Engine 前固定一种语义：
@@ -352,6 +375,15 @@ State transition 的语义只有：
 
 Program 根据完整 post-state 选择 Move 或 Fork。Fork source 在 destination 首次 state-writing commit 完成前
 保持 pin；该结算属于 active model transaction，不能与新的 global resource transition 重叠。
+
+Active State binding 同时记录 read source 的生命周期归属。Root、Move、Restore 和 active-capture Fork
+的初始 read 由当前 sequence 提供；从 retained source 或仍有 surviving checkpoint reference 的 consumed
+source 建立 Fork 时，read 由 surviving owner/reference graph 保留，active primary binding 只拥有
+write destination。这个 borrowed read 参与全局物理占用并由 source pin 保护，但不能通过 primary binding
+再次计费，也不能仅凭 primary binding 在 abort/release 时释放；若 surviving checkpoint 本身是 active
+lineage 独占的 optional checkpoint，它只通过该 checkpoint ownership 计入 entitlement，并在该 ownership
+结算后决定 source 是否可释放。Fork settlement 后 read/write 都切换到 destination，生命周期重新归属
+active sequence。
 
 ### 5.2 Typed KV
 
@@ -406,6 +438,12 @@ required Device checkpoint prefix
 
 Active truncate 或 speculative rollback 可以解除 mappings，但对应容量仍属于该 active reservation。
 只有 terminal release 或明确缩减 active entitlement 的资源 transition 才能把容量归还全局。
+
+Active entitlement 只包含 active owner 的 destination、私有增长 reservation 和已归属于该 lineage 的
+exclusive optional resources。Fork 期间借用的 immutable StateImage/KV source 不能通过 primary binding
+再次计费：它若由其他 surviving owner 保留则只存在于全局 physical occupancy，若由 active lineage 的
+optional checkpoint 独占则只通过该 checkpoint 计一次。否则同一 allocation 会被重复收费，并把合法的
+Fork 错判为超出 active guarantee。
 
 ### 6.2 Terminal 与 capture
 
@@ -466,6 +504,12 @@ Shared prefix 的三个状态不能混为一谈：
 外部协议或 C++ `PromptInput` 每个请求最多提交四个显式 markers。Frontend 还可以生成最多三个 Engine
 candidates：全部 tools 之后、连续 leading System/Developer 之后，以及 full prompt。相同 frontier 合并，
 因此每个请求最多七个 prepared candidates。这个固定上限不是启动配置。
+
+Shared catalog 是 Engine-wide 公共容量，不是每条 lineage 的配额。启用 context cache 时，默认 logical
+capacity 同时覆盖 active concurrency 下限和单请求最多四个显式 markers，即
+`max(max_concurrency, kMaximumExplicitPromptCacheMarkers)`；显式配置仍完整覆盖默认值。这个下限允许较早的
+稳定层与较晚的滚动 marker 同时成为 owner，但是否 capture、保留或替换仍只由通用 portfolio/pressure
+planning 决定，不提供 Claude、compact 或 token-position 特例。
 
 Candidate 保存 evidence flags。策略含义为：
 

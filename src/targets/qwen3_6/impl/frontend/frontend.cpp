@@ -42,6 +42,7 @@ constexpr std::string_view kUtf8Replacement = "\xef\xbf\xbd";
 constexpr std::string_view kThinkingControl =
     "\n\n Considering the limited time by the user, I have to give the solution based on the "
     "thinking directly now.\n</think>\n\n";
+static_assert(kThinkingControl.ends_with(fi::kCanonicalReasoningCloseSerialization));
 constexpr double kRescaleFactor                       = 1.0 / 255.0;
 constexpr double kVideoFps                            = 2.0;
 constexpr int kVideoMinFrames                         = 4;
@@ -488,6 +489,43 @@ std::size_t longest_suffix_prefix(std::string_view text, std::string_view marker
     return 0;
 }
 
+template <std::size_t Size>
+consteval std::array<std::size_t, Size> make_prefix_failure_table(std::string_view pattern) {
+    std::array<std::size_t, Size> failure{};
+    for (std::size_t index = 1; index < Size; ++index) {
+        std::size_t matched = failure[index - 1U];
+        while (matched != 0 && pattern[index] != pattern[matched]) {
+            matched = failure[matched - 1U];
+        }
+        if (pattern[index] == pattern[matched]) { ++matched; }
+        failure[index] = matched;
+    }
+    return failure;
+}
+
+struct PrefixExecutionTracker {
+    static constexpr std::string_view kBoundary = fi::kCanonicalReasoningCloseSerialization;
+    static constexpr auto kFailure = make_prefix_failure_table<kBoundary.size()>(kBoundary);
+
+    // Returns the byte offset immediately after the first completed boundary in this token.
+    [[nodiscard]] std::optional<std::size_t> feed(std::string_view bytes) noexcept {
+        if (!tracking) { return std::nullopt; }
+        for (std::size_t offset = 0; offset < bytes.size(); ++offset) {
+            const char byte = bytes[offset];
+            while (matched != 0 && byte != kBoundary[matched]) { matched = kFailure[matched - 1U]; }
+            if (byte == kBoundary[matched]) { ++matched; }
+            if (matched != kBoundary.size()) { continue; }
+            tracking = false;
+            matched  = 0;
+            return offset + 1U;
+        }
+        return std::nullopt;
+    }
+
+    std::size_t matched = 0;
+    bool tracking       = false;
+};
+
 struct DecoderState {
     std::string utf8_pending;
     std::string think_marker_pending;
@@ -702,8 +740,7 @@ PreparedContextCache prepare_context_cache(
     std::span<const std::optional<std::uint32_t>> cache_boundaries,
     std::span<const VisionItem> vision_items, std::optional<std::size_t> engine_tool_marker_index,
     std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier) {
-    constexpr std::size_t kMaximumExplicitMarkers = 4U;
-    if (hints.markers.size() > kMaximumExplicitMarkers) {
+    if (hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
     if (cache_boundaries.size() != rendered_markers.size()) {
@@ -925,8 +962,9 @@ public:
         if (thinking.budget && *thinking.budget == 0) {
             throw std::invalid_argument("thinking budget must be positive");
         }
-        state.in_reasoning = split_reasoning;
-        semantic.budget    = thinking.budget;
+        state.in_reasoning        = split_reasoning;
+        prefix_execution.tracking = starts_in_reasoning;
+        semantic.budget           = thinking.budget;
         // The presentation decoder already tracks normal reasoning output. Keep the independent
         // semantic tracker dormant unless a cap needs it, so the default unlimited path does not
         // decode every model token twice.
@@ -942,9 +980,13 @@ public:
     DecoderState preview_state;
     SemanticThinkingState semantic;
     SemanticThinkingState preview_semantic;
+    PrefixExecutionTracker prefix_execution;
+    PrefixExecutionTracker preview_prefix_execution;
+    std::optional<std::uint32_t> preview_execution_split_after;
     PublishedOutput preview_output;
     fi::ToolCallOutputDecoder tool_call_output;
     std::vector<GeneratedToolCall> tool_calls;
+    ToolCallParseDiagnostics tool_call_parse;
     bool preview_ready = false;
 };
 
@@ -1044,23 +1086,37 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         throw std::invalid_argument("generated-token budget has an invalid limit reason");
     }
 
-    impl_->preview_state    = impl_->state;
-    impl_->preview_semantic = impl_->semantic;
+    impl_->preview_state            = impl_->state;
+    impl_->preview_semantic         = impl_->semantic;
+    impl_->preview_prefix_execution = impl_->prefix_execution;
+    impl_->preview_execution_split_after.reset();
     impl_->preview_output.clear();
 
     const auto complete = [&](std::uint32_t count, FinishReason reason,
                               runtime::ContinuationAction continuation =
                                   runtime::ContinuationAction::Decode) {
         if (reason != FinishReason::None) { impl_->preview_semantic.control_pending = false; }
+        if (impl_->preview_execution_split_after && *impl_->preview_execution_split_after > count) {
+            throw std::logic_error("prefix execution split exceeds the accepted token prefix");
+        }
         impl_->preview_ready = true;
         return runtime::OutputDecision{
-            .accepted_tokens = count, .finish_reason = reason, .continuation = continuation};
+            .accepted_tokens              = count,
+            .finish_reason                = reason,
+            .continuation                 = continuation,
+            .prefix_execution_split_after = impl_->preview_execution_split_after,
+        };
     };
 
     for (std::size_t index = 0; index < tokens.size(); ++index) {
         const std::uint32_t count          = static_cast<std::uint32_t>(index + 1);
         const TokenId token                = tokens[index];
         const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(token);
+
+        if (const auto boundary = impl_->preview_prefix_execution.feed(decoded.bytes);
+            boundary && *boundary == decoded.bytes.size()) {
+            impl_->preview_execution_split_after = count;
+        }
 
         if (impl_->preview_state.in_reasoning) { ++impl_->preview_state.reasoning_tokens; }
         if (impl_->preview_semantic.in_reasoning) {
@@ -1153,12 +1209,18 @@ runtime::OutputDecision OutputSession::preview_control(std::span<const TokenId> 
         throw std::invalid_argument("thinking control span exceeds the remaining output budget");
     }
 
-    impl_->preview_state    = impl_->state;
-    impl_->preview_semantic = impl_->semantic;
+    impl_->preview_state            = impl_->state;
+    impl_->preview_semantic         = impl_->semantic;
+    impl_->preview_prefix_execution = impl_->prefix_execution;
+    impl_->preview_execution_split_after.reset();
     impl_->preview_output.clear();
     for (std::size_t index = 0; index < tokens.size(); ++index) {
         const TokenId token                = tokens[index];
         const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(token);
+        if (const auto boundary = impl_->preview_prefix_execution.feed(decoded.bytes);
+            boundary && *boundary == decoded.bytes.size()) {
+            impl_->preview_execution_split_after = static_cast<std::uint32_t>(index + 1U);
+        }
         if (impl_->preview_state.in_reasoning) { ++impl_->preview_state.reasoning_tokens; }
         feed_semantic_thinking(impl_->preview_semantic, decoded.bytes);
         const std::string_view presentation_bytes =
@@ -1176,7 +1238,10 @@ runtime::OutputDecision OutputSession::preview_control(std::span<const TokenId> 
     impl_->preview_semantic.applied         = true;
     impl_->preview_semantic.injected_tokens = static_cast<std::uint32_t>(tokens.size());
     impl_->preview_ready                    = true;
-    return runtime::OutputDecision{.accepted_tokens = static_cast<std::uint32_t>(tokens.size())};
+    return runtime::OutputDecision{
+        .accepted_tokens              = static_cast<std::uint32_t>(tokens.size()),
+        .prefix_execution_split_after = impl_->preview_execution_split_after,
+    };
 }
 
 void OutputSession::validate_generation_capacity(std::uint32_t effective_output_tokens) const {
@@ -1204,8 +1269,10 @@ runtime::OutputDecision OutputSession::preview_terminal(FinishReason reason) {
         reason == FinishReason::StopToken) {
         throw std::invalid_argument("invalid between-round terminal decoder reason");
     }
-    impl_->preview_state                    = impl_->state;
-    impl_->preview_semantic                 = impl_->semantic;
+    impl_->preview_state            = impl_->state;
+    impl_->preview_semantic         = impl_->semantic;
+    impl_->preview_prefix_execution = impl_->prefix_execution;
+    impl_->preview_execution_split_after.reset();
     impl_->preview_semantic.control_pending = false;
     impl_->preview_output.clear();
     terminalize(impl_->preview_state, impl_->policy, impl_->preview_output, 0);
@@ -1218,6 +1285,7 @@ PublishedOutput OutputSession::commit_preview() {
     using std::swap;
     swap(impl_->state, impl_->preview_state);
     swap(impl_->semantic, impl_->preview_semantic);
+    swap(impl_->prefix_execution, impl_->preview_prefix_execution);
     PublishedOutput output = std::move(impl_->preview_output);
     impl_->preview_output.clear();
     impl_->preview_ready = false;
@@ -1230,6 +1298,7 @@ PublishedOutput OutputSession::commit_preview() {
     if (impl_->state.terminal) {
         fi::ToolCallOutputDecoder::Terminal terminal = impl_->tool_call_output.finish();
         impl_->tool_calls                            = std::move(terminal.tool_calls);
+        impl_->tool_call_parse                       = terminal.diagnostics;
         if (!terminal.content.empty()) {
             OutputDelta* content = nullptr;
             for (OutputDelta& delta : output) {
@@ -1248,6 +1317,10 @@ PublishedOutput OutputSession::commit_preview() {
 
 std::vector<GeneratedToolCall> OutputSession::take_tool_calls() noexcept {
     return impl_ != nullptr ? std::move(impl_->tool_calls) : std::vector<GeneratedToolCall>{};
+}
+
+ToolCallParseDiagnostics OutputSession::tool_call_parse_diagnostics() const noexcept {
+    return impl_ != nullptr ? impl_->tool_call_parse : ToolCallParseDiagnostics{};
 }
 
 std::uint32_t OutputSession::reasoning_tokens() const noexcept {
@@ -1318,7 +1391,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     const auto start              = Clock::now();
     const PromptOptions options   = input.options;
     ContextCacheHints cache_hints = std::move(input.context_cache);
-    if (cache_hints.markers.size() > 4U) {
+    if (cache_hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
     std::vector<ChatRole> message_roles;

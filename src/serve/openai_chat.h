@@ -4,6 +4,7 @@
 // GenerationRequest; response builders consume protocol-neutral GenerationOutcome values.
 
 #include "serve/request.h"
+#include "serve/request_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -28,7 +29,10 @@ struct OpenAIChatRequest {
     bool return_progress   = false;
 };
 
-OpenAIChatRequest parse_chat_completion_request(const nlohmann::json& body,
+// RequestJson (upstream) keeps nested-object insertion order for the model-facing
+// serialization; the extra default_model argument is fork behavior (842617b1): when the
+// client omits "model", fall back to the single loaded model instead of rejecting.
+OpenAIChatRequest parse_chat_completion_request(const RequestJson& body,
                                                 const RequestLimits& limits,
                                                 const std::string& default_model);
 

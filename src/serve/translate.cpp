@@ -1,4 +1,5 @@
 #include "serve/translate.h"
+#include "serve/request_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -95,7 +96,7 @@ std::vector<const ToolDefinition*> effective_tools(const GenerationRequest& requ
 }
 
 std::string render_tool_definition(const ToolDefinition& tool) {
-    using Json  = nlohmann::json;
+    using Json  = RequestJson;
     Json schema = Json::parse(tool.input_schema_json);
     Json function{{"name", tool.name}, {"parameters", std::move(schema)}, {"strict", false}};
     if (!tool.description.empty()) { function["description"] = tool.description; }

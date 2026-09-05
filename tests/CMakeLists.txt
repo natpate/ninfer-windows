@@ -61,6 +61,9 @@ ninfer_add_test(ninfer_artifact_materialization_test
 ninfer_add_test(ninfer_media_decode_test
   SOURCES test_media_decode.cpp
   LIBRARIES ninfer_media_decode)
+ninfer_add_test(ninfer_prompt_input_test
+  SOURCES test_prompt_input.cpp
+  LIBRARIES ninfer_product_prompt_input)
 ninfer_add_test(ninfer_pretty_logging_test
   SOURCES test_pretty_logging.cpp
   LIBRARIES ninfer_product_logging)

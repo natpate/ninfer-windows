@@ -954,11 +954,16 @@ The registered implementation maps these concerns as follows:
 | exact artifact and converter | [`qwen3.6-35b-a3b-artifact.md`](qwen3.6-35b-a3b-artifact.md), `tools/convert/qwen3_6_35b_a3b/` |
 
 The registered 35B Public Engine conditionally materializes the DFlash companion when DFlash is the
-selected speculative backend. It runs through the same `.ninfer` Engine route as ordinary and MTP
-generation, is text-only, and is mutually exclusive with Vision and MTP. The family runtime owns
-its persistent state, workspace, proposal execution, context commit, target verification and
-acceptance, and CUDA Graph lifecycle. When DFlash is not selected, its weights and state remain
-nonresident.
+selected speculative backend and independently materializes Vision when Vision is enabled. DFlash
+and Vision may therefore coexist; MTP and DFlash remain mutually exclusive backend selections.
+After Vision embeddings are scattered into the Text input, DFlash captures the same target decoder
+hidden features as it does for a text prompt. Target multimodal prefill retains its three-axis
+MRoPE, DFlash context/proposal attention uses one-dimensional logical token positions, and target
+verification of generated text uses the logical cache position plus the sequence `rope_delta`.
+DFlash runs through the same `.ninfer` Engine route as ordinary and MTP generation. The family
+runtime owns its persistent state, workspace, proposal execution, context commit, target
+verification and acceptance, and CUDA Graph lifecycle. When DFlash is not selected, its weights and
+state remain nonresident. DFlash does not accelerate Vision encode or the target prefill phase.
 
 Each production Op path is checked against its independent mathematical oracle; equality between
 different numerical or execution paths is not a runtime acceptance contract.

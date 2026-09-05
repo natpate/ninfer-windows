@@ -430,6 +430,13 @@ int main() {
                           done.at("result").at("thinking_control_tokens") == 19 &&
                           done.at("result").at("thinking_control_applied") == true,
                       "thinking-control result accounting missing");
+    failures +=
+        check(done.at("result").at("tool_call_parse").at("marker_seen") == false &&
+                  done.at("result").at("tool_call_parse").at("structured_call_count") == 0 &&
+                  done.at("result").at("tool_call_parse").at("empty_arguments_omitted") == 0 &&
+                  done.at("result").at("tool_call_parse").at("schema_mismatch_arguments") == 0 &&
+                  done.at("result").at("tool_call_parse").at("fallback_reason") == "none",
+              "default tool-call parse diagnostics missing");
     outcome.metrics.prefix_reuse_path = ninfer::PrefixReusePath::PrivateResponseReplay;
     const Json response_restore =
         Json::parse(format_request_done_json("serve-test", 3001, context, outcome));
@@ -473,6 +480,53 @@ int main() {
             "(25.2%, response replay) | TTFT 358 ms | total 5.7s | prefill 1.28k tok/s | "
             "decode 191.4 tok/s | mtp accepted 720/900 (80.0%) | thinking 256/256, control 19",
         "pretty request-done record mismatch");
+
+    GenerationOutcome normalized_tool_outcome = outcome;
+    normalized_tool_outcome.tool_calls.push_back(
+        ninfer::GeneratedToolCall{.name = "Edit", .arguments_json = R"({"file_path":"x"})"});
+    normalized_tool_outcome.tool_call_parse = {
+        .marker_seen               = true,
+        .structured_call_count     = 1,
+        .empty_arguments_omitted   = 1,
+        .schema_mismatch_arguments = 2,
+        .fallback_reason           = ninfer::ToolCallParseFallbackReason::None,
+    };
+    const Json normalized_tool_done =
+        Json::parse(format_request_done_json("serve-test", 3002, context, normalized_tool_outcome));
+    failures += check(
+        normalized_tool_done.at("result").at("tool_call_count") == 1 &&
+            normalized_tool_done.at("result").at("tool_call_parse").at("structured_call_count") ==
+                1 &&
+            normalized_tool_done.at("result").at("tool_call_parse").at("empty_arguments_omitted") ==
+                1 &&
+            normalized_tool_done.at("result")
+                    .at("tool_call_parse")
+                    .at("schema_mismatch_arguments") == 2 &&
+            normalized_tool_done.at("result").at("tool_call_parse").at("fallback_reason") ==
+                "none" &&
+            !render_tool_call_fallback(context, normalized_tool_outcome),
+        "successful tool-call normalization diagnostics are incomplete or noisy");
+
+    GenerationOutcome fallback_outcome = outcome;
+    fallback_outcome.tool_call_parse   = {
+          .marker_seen               = true,
+          .structured_call_count     = 0,
+          .empty_arguments_omitted   = 0,
+          .schema_mismatch_arguments = 0,
+          .fallback_reason           = ninfer::ToolCallParseFallbackReason::DuplicateParameter,
+    };
+    const Json fallback_done =
+        Json::parse(format_request_done_json("serve-test", 3003, context, fallback_outcome));
+    failures += check(fallback_done.at("result").at("tool_call_parse").at("marker_seen") &&
+                          fallback_done.at("result").at("tool_call_parse").at("fallback_reason") ==
+                              "duplicate_parameter",
+                      "tool-call text fallback diagnostics missing from JSONL");
+    const std::optional<OperationalRecord> fallback_warning =
+        render_tool_call_fallback(context, fallback_outcome);
+    failures += check(
+        fallback_warning && fallback_warning->severity == OperationalSeverity::Warning &&
+            fallback_warning->message == "req#7 tool markup returned as text | duplicate parameter",
+        "tool-call text fallback warning is absent or exposes raw content");
 
     const Json error =
         Json::parse(format_request_error_json("serve-test", 4000, context, "generation failed"));

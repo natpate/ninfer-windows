@@ -166,10 +166,23 @@ void ResidentPrefixIdentity::swap(ResidentPrefixIdentity& other) noexcept {
     rewrite_execution_frontiers_.swap(other.rewrite_execution_frontiers_);
 }
 
-void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t rope_delta) {
+void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t rope_delta,
+                                              std::optional<std::uint32_t> execution_split_after) {
     const std::size_t begin = size();
     if (count > std::numeric_limits<std::size_t>::max() - begin) {
         throw std::overflow_error("generated prefix identity length overflows size_t");
+    }
+    std::optional<std::uint32_t> execution_frontier;
+    if (execution_split_after) {
+        if (*execution_split_after == 0 || *execution_split_after > count ||
+            begin > std::numeric_limits<std::uint32_t>::max() - *execution_split_after) {
+            throw std::invalid_argument("generated execution split is outside the appended span");
+        }
+        execution_frontier = static_cast<std::uint32_t>(begin) + *execution_split_after;
+        if (!rewrite_execution_frontiers_.empty() &&
+            rewrite_execution_frontiers_.back() >= *execution_frontier) {
+            throw std::logic_error("generated execution split is not a new ordered frontier");
+        }
     }
     for (std::size_t offset = 0; offset < count; ++offset) {
         const std::size_t index = begin + offset;
@@ -184,6 +197,7 @@ void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t ro
         token_types_.push_back(0);
         for (auto& axis : positions_) { axis.push_back(static_cast<std::int32_t>(position)); }
     }
+    if (execution_frontier) { rewrite_execution_frontiers_.push_back(*execution_frontier); }
 }
 
 void ResidentPrefixIdentity::truncate(std::size_t tokens) {
@@ -340,7 +354,8 @@ void PrefixShortlistDigests::swap(PrefixShortlistDigests& other) noexcept {
 }
 
 void PrefixShortlistDigests::append_generated(std::span<const TokenId> tokens,
-                                              std::int32_t rope_delta) {
+                                              std::int32_t rope_delta,
+                                              std::optional<std::uint32_t> execution_split_after) {
     if (digests_.empty()) {
         throw std::logic_error("generated shortlist append has no resident prefix");
     }
@@ -348,7 +363,17 @@ void PrefixShortlistDigests::append_generated(std::span<const TokenId> tokens,
     if (tokens.size() > std::numeric_limits<std::size_t>::max() - begin) {
         throw std::overflow_error("generated shortlist length overflows size_t");
     }
-    std::size_t no_rewrite = 0;
+    std::array<std::uint32_t, 1> execution_frontier{};
+    std::span<const std::uint32_t> rewrite_frontiers;
+    if (execution_split_after) {
+        if (*execution_split_after == 0 || *execution_split_after > tokens.size() ||
+            begin > std::numeric_limits<std::uint32_t>::max() - *execution_split_after) {
+            throw std::invalid_argument("generated shortlist split is outside the appended span");
+        }
+        execution_frontier[0] = static_cast<std::uint32_t>(begin) + *execution_split_after;
+        rewrite_frontiers     = execution_frontier;
+    }
+    std::size_t next_rewrite = 0;
     for (std::size_t offset = 0; offset < tokens.size(); ++offset) {
         const std::size_t index = begin + offset;
         if (index > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -360,7 +385,11 @@ void PrefixShortlistDigests::append_generated(std::span<const TokenId> tokens,
             throw std::overflow_error("generated shortlist MRoPE position exceeds int32");
         }
         const std::int32_t value = static_cast<std::int32_t>(position);
-        append_digest(digests_, tokens[offset], 0, {value, value, value}, {}, no_rewrite);
+        append_digest(digests_, tokens[offset], 0, {value, value, value}, rewrite_frontiers,
+                      next_rewrite);
+    }
+    if (next_rewrite != rewrite_frontiers.size()) {
+        throw std::logic_error("generated shortlist did not commit its execution split");
     }
 }
 

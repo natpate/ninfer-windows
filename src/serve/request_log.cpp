@@ -103,6 +103,15 @@ const char* finish_reason_name(ninfer::FinishReason reason) {
     return "unknown";
 }
 
+Json tool_call_parse_json(const ninfer::ToolCallParseDiagnostics& diagnostics) {
+    return Json{{"marker_seen", diagnostics.marker_seen},
+                {"structured_call_count", diagnostics.structured_call_count},
+                {"empty_arguments_omitted", diagnostics.empty_arguments_omitted},
+                {"schema_mismatch_arguments", diagnostics.schema_mismatch_arguments},
+                {"fallback_reason",
+                 ninfer::tool_call_parse_fallback_reason_name(diagnostics.fallback_reason)}};
+}
+
 std::string tool_choice_name(const ToolChoice& choice) {
     switch (choice.mode) {
     case ToolChoiceMode::Auto:
@@ -582,7 +591,8 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"model_thinking_tokens", outcome.thinking.model_thinking_tokens},
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
-             {"tool_call_count", outcome.tool_calls.size()}};
+             {"tool_call_count", outcome.tool_calls.size()},
+             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)}};
     record["timings_seconds"] = Json{
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
         {"vision", outcome.metrics.vision_seconds},   {"prefill", outcome.metrics.prefill_seconds},

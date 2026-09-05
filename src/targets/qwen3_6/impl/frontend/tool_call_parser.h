@@ -13,8 +13,9 @@
 namespace ninfer::targets::qwen3_6::frontend_internal {
 
 // Qwen's tool syntax carries each argument as untyped text. This terminal contract records only
-// the supported top-level JSON Schema types needed to decode that text; recursive validation is
-// intentionally outside the non-strict tool contract.
+// the supported top-level JSON Schema types needed to normalize that text. A type mismatch remains
+// a structured call for consumer validation; recursive validation is outside this non-strict
+// contract.
 struct ToolCallOutputContract {
     enum class SchemaType : std::uint8_t {
         Null    = 1U << 0U,
@@ -30,14 +31,14 @@ struct ToolCallOutputContract {
         std::uint8_t bits = 0;
     };
 
-    enum class DecodePolicy : std::uint8_t {
+    enum class NormalizationPolicy : std::uint8_t {
         Legacy,
         DeclaredTypes,
     };
 
     struct Parameter {
         std::string name;
-        DecodePolicy policy = DecodePolicy::Legacy;
+        NormalizationPolicy policy = NormalizationPolicy::Legacy;
         TypeSet types;
     };
 
@@ -55,6 +56,7 @@ struct ParsedToolCallOutput {
     bool is_tool_call_response = false;
     std::string content;
     std::vector<GeneratedToolCall> tool_calls;
+    ToolCallParseDiagnostics diagnostics;
 };
 
 [[nodiscard]] std::shared_ptr<const ToolCallOutputContract>
@@ -72,6 +74,7 @@ public:
     struct Terminal {
         std::string content;
         std::vector<GeneratedToolCall> tool_calls;
+        ToolCallParseDiagnostics diagnostics;
     };
 
     ToolCallOutputDecoder(std::shared_ptr<const ToolCallOutputContract> contract,

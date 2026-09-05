@@ -1,6 +1,5 @@
 #pragma once
 
-#include "serve/anthropic_thinking_signature.h"
 #include "serve/generation_service.h"
 #include "serve/operational_log.h"
 #include "serve/openai_responses_store.h"
@@ -106,7 +105,6 @@ private:
 
     GenerationService* service_ = nullptr;
     ServeOptions options_;
-    AnthropicThinkingSigner anthropic_thinking_signer_;
     std::string public_model_id_;
     bool webui_serving_ = false;         // true once a static webui dir is mounted
     std::string webui_index_html_;       // cached index.html for the SPA fallback
