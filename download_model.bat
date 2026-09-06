@@ -2,7 +2,7 @@
 rem ============================================================================
 rem  download_model.bat
 rem
-rem  Downloads exactly ONE of the five published NInfer model artifacts from
+rem  Downloads exactly ONE of the six published NInfer model artifacts from
 rem  Hugging Face (huggingface.co) into the ./models directory that sits next
 rem  to this script.
 rem
@@ -44,11 +44,12 @@ echo    [2]  Qwen3.6-27B NVFP4  nvfp4           qwen3_6_27b_nvfp4.ninfer   ~17.1
 echo    [3]  Qwen3.8-27B        groupwise-int   qwen3_8_27b.ninfer          ~19.0 GiB
 echo    [4]  Qwen3.8-27B NVFP4  nvfp4           qwen3_8_27b_nvfp4.ninfer   ~22.1 GiB
 echo    [5]  Qwen3.6-35B-A3B    groupwise-int   qwen3_6_35b_a3b.ninfer     ~21.2 GiB
+echo    [6]  Qwen3.8-27B NVFP4F  nvfp4full       qwen3_8_27b_nvfp4full.ninfer  ~17.1 GiB
 echo.
 echo    [0]  cancel
 echo.
 set "CHOICE="
-set /p "CHOICE=  pick one artifact [1-5]: "
+set /p "CHOICE=  pick one artifact [1-6]: "
 if "%CHOICE%"=="" goto menu
 if /i "%CHOICE%"=="0" goto :cancelled
 if /i "%CHOICE%"=="q" goto :cancelled
@@ -56,7 +57,7 @@ if /i "%CHOICE%"=="quit" goto :cancelled
 if /i "%CHOICE%"=="cancel" goto :cancelled
 
 set "VALID="
-for %%x in (1 2 3 4 5) do if "%CHOICE%"=="%%x" set "VALID=1"
+for %%x in (1 2 3 4 5 6) do if "%CHOICE%"=="%%x" set "VALID=1"
 if not defined VALID (
     echo.
     echo    !CHOICE!  - not a valid choice.
@@ -89,12 +90,19 @@ if "%CHOICE%"=="1" (
     set "FILE=qwen3_8_27b_nvfp4.ninfer"
     set "EXP_BYTES=23719496192"
     set "EXP_SHA=552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c"
-) else (
+) else if "%CHOICE%"=="5" (
     set "LABEL=Qwen3.6-35B-A3B (groupwise-int)"
     set "REPO=neroued/Qwen3.6-35B-A3B-NInfer"
     set "FILE=qwen3_6_35b_a3b.ninfer"
     set "EXP_BYTES=22783246080"
     set "EXP_SHA=1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2"
+)
+) else (
+    set "LABEL=Qwen3.8-27B (nvfp4full)"
+    set "REPO=cometkim/Qwen3.8-27B-nvfp4full-NInfer"
+    set "FILE=qwen3_8_27b_nvfp4full.ninfer"
+    set "EXP_BYTES=18324059648"
+    set "EXP_SHA=2f59cc27d67cb7acba0ba8a0e0881ac89c1db2b267a60119a696fefa12faf4e7"
 )
 
 set "OUT=%MODELS%\%FILE%"
