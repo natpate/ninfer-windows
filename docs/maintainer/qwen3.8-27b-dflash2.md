@@ -5,8 +5,8 @@
 > 范围：本文只固定 Qwen3.8-27B DFlash2 的模型计算、proposal、target
 > verification 和状态语义。Artifact inventory 与存储格式由
 > [`qwen3.8-27b-artifact.md`](qwen3.8-27b-artifact.md) 管理；Op 拆分、shape 和融合边界由
-> [`2026-09-05-qwen3.8-27b-dflash2-op-checklist.md`](2026-09-05-qwen3.8-27b-dflash2-op-checklist.md)
-> 管理。
+> [`op-development.md`](op-development.md) 管理；当前验收命令见
+> [`tests/README.md`](../../tests/README.md)。
 
 ## 1. 核对依据与结论
 
@@ -144,7 +144,7 @@ local window；若一个 prefill chunk 超过 2048 行，只 materialize 该 chu
 上述公式没有在 K projection 与 head norm 之间定义可观察的 BF16 cast；融合 materialization
 的 raw K 精度属于实现 profile。最终 K 的 BF16 store 和 V 的 `FP16_RNE(BF16)` storage
 转换保持显式边界。Context materialization 的合同和独立数学 oracle 直接使用上述完整
-公式。可变 context 宽度、count envelope 及实现路线的当前验收状态统一见 Op checklist，
+公式。可变 context 宽度、count envelope 及实现路线的验收命令见 [`tests/README.md`](../../tests/README.md)，
 算法文档不维护逐 Op 完成进度。
 
 DFlash2 RoPE 是完整 128 维、split-half/NeoX-style 的一维 RoPE。它使用绝对 Text

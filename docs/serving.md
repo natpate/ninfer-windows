@@ -83,6 +83,10 @@ connection when the downstream client disappears.
 
 ## OpenAI Chat Completions
 
+The Windows fork uses the loaded model when a Chat Completions request omits `model` or
+does not supply a non-empty string. An explicit non-empty name must match the public model ID.
+This fallback does not apply to the Responses endpoint.
+
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
