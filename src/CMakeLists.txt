@@ -87,6 +87,7 @@ add_library(ninfer_ops STATIC
   ops/launcher/prepare_masked_block.cu
   ops/launcher/residual_add.cu
   ops/launcher/rmsnorm.cu
+  ops/launcher/rmsnorm_pack_tail.cu
   ops/launcher/rope.cu
   ops/launcher/sampling.cu
   ops/launcher/scalar.cu
@@ -95,6 +96,12 @@ add_library(ninfer_ops STATIC
   ops/launcher/silu_and_mul.cu
   ops/launcher/target_logprobs.cu
   ops/launcher/vision_pos_embed.cu
+  ops/rmsnorm_rope/rmsnorm_rope.cpp
+  ops/rmsnorm_rope/launch.cu
+  ops/context_kv_materialize/context_kv_materialize.cpp
+  ops/context_kv_materialize/materialize.cu
+  ops/candidate_selector/bf16/candidate_selector_path.cu
+  ops/candidate_selector/bf16/candidate_selector_path_plan.cpp
   # Softmax Attention and KV-cache state transitions.
   ops/softmax_attention/dense/causal_cache/causal_softmax_attention.cpp
   ops/softmax_attention/dense/causal_cache/small_t.cu
@@ -129,6 +136,8 @@ add_library(ninfer_ops STATIC
   ops/attn_input_proj/bf16/bf16_attn_input_plan.cpp
   ops/attn_input_proj/fp8/fp8_attn_input_decode.cu
   ops/attn_input_proj/fp8/fp8_attn_input_small_t.cu
+  ops/attn_input_proj/fp8/fp8_attn_input_a16_small_t.cu
+  ops/attn_input_proj/fp8/fp8_attn_input_a16_gemm.cu
   ops/attn_input_proj/fp8/fp8_attn_input_a8.cu
   ops/attn_input_proj/fp8/fp8_attn_input_plan.cpp
   ops/attn_input_proj/nvfp4/nvfp4_attn_input_decode.cu
@@ -142,9 +151,10 @@ add_library(ninfer_ops STATIC
   ops/attn_input_proj/w8/w8_attn_input_gemm_mma.cu
   ops/attn_input_proj/w8/w8_attn_input_gemm_simt.cu
   ops/attn_input_proj/w8/w8_attn_input_gemm_splitk.cu
+  ops/attn_input_proj/w8/w8_dflash2_attn_input.cu
   ops/attn_input_proj/w8/w8_attn_input_plan.cpp
   ops/gdn_input_proj/fp8/fp8_gdn_input_decode.cu
-  ops/gdn_input_proj/fp8/fp8_gdn_input_small_t.cu
+  ops/gdn_input_proj/fp8/fp8_gdn_input_matrix.cu
   ops/gdn_input_proj/fp8/fp8_gdn_input_a8.cu
   ops/gdn_input_proj/fp8/fp8_gdn_input_plan.cpp
   ops/gdn_input_proj/fp8/fp8_gdn_conv_fused.cu
@@ -166,10 +176,17 @@ add_library(ninfer_ops STATIC
   ops/gdn_input_proj/w8/w8_gdn_input_gemm_mma.cu
   ops/gdn_input_proj/w8/w8_gdn_input_gemm_splitk.cu
   ops/gdn_input_proj/w8/w8_gdn_input_plan.cpp
+  ops/gdn_gating_proj/bf16/bf16_gdn_norm_gating_proj_27.cu
   ops/gdn_gating_proj/bf16/bf16_gdn_gating_proj_kernels.cu
   ops/gdn_gating_proj/bf16/bf16_gdn_gating_proj_plan.cpp
+  ops/dynamic_grouped_conv/bf16/bf16_dynamic_grouped_conv_prepare_partial.cu
+  ops/dynamic_grouped_conv/bf16/bf16_dynamic_grouped_conv_prepare_reduce.cu
+  ops/dynamic_grouped_conv/bf16/bf16_dynamic_grouped_conv_prepare_plan.cpp
+  ops/dynamic_grouped_conv/w8/w8_dynamic_grouped_conv_add_materialized.cu
+  ops/dynamic_grouped_conv/w8/w8_dynamic_grouped_conv_add_plan.cpp
   ops/linear/bf16/bf16_gemv.cu
   ops/linear/bf16/bf16_gemm_mma.cu
+  ops/linear/bf16/bf16_n256_k5120.cu
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
   ops/linear/fp8/fp8_format.cpp
@@ -225,12 +242,14 @@ add_library(ninfer_ops STATIC
   ops/linear_swiglu/fp8/fp8_linear_swiglu_a8.cu
   ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.cpp
   ops/linear_swiglu/w8/w8_linear_swiglu_decode.cu
+  ops/linear_swiglu/w8/w8_dflash2_linear_swiglu.cu
   ops/linear_swiglu/w8/w8_linear_swiglu_gemm_mma.cu
   ops/linear_swiglu/w8/w8_linear_swiglu_gemm_splitk.cu
   ops/linear_swiglu/w8/w8_linear_swiglu_plan.cpp
   ops/linear/q6/q6_dispatch.cpp
   ops/linear/q6/q6_rowsplit_gemm_mma.cu
   ops/linear/q6/q6_rowsplit_gemm_simt.cu
+  ops/linear/w8/w8_feature.cu
   ops/linear/w8/w8_rowsplit_gemm_mma.cu
   ops/linear/w8/w8_rowsplit_gemm_simt.cu
   ops/linear/w8/w8_rowsplit_gemm_decode.cu
@@ -242,6 +261,14 @@ add_library(ninfer_ops STATIC
   ops/linear_pair/w8/w8_pair_gemm_mma.cu
   ops/linear_pair/w8/w8_pair_gemm_splitk.cu
   ops/linear_pair/w8/w8_pair_plan.cpp
+  ops/linear_topk/linear_topk.cpp
+  ops/linear_topk/w8.cu
+  ops/linear_topk/w8_m64.cu
+  ops/linear_topk/fp8.cu
+  ops/linear_topk/fp8_m64.cu
+  ops/linear_topk/q4.cu
+  ops/linear_topk/q4_m64.cu
+  ops/linear_topk/merge.cu
   ops/sparse_moe/decode/sparse_moe_decode_kernels.cu
   ops/sparse_moe/decode/sparse_moe_decode_plan.cpp
   ops/sparse_moe/prefill/sparse_moe_prefill_kernels.cu
@@ -253,6 +280,8 @@ add_library(ninfer_ops STATIC
   ops/wrapper/argmax.cpp
   ops/wrapper/cast.cpp
   ops/wrapper/causal_conv1d_silu.cpp
+  ops/wrapper/candidate_selector.cpp
+  ops/wrapper/dynamic_grouped_conv.cpp
   ops/wrapper/embedding.cpp
   ops/wrapper/gdn_gating.cpp
   ops/wrapper/gdn_gating_proj.cpp
@@ -272,6 +301,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/prepare_masked_block.cpp
   ops/wrapper/residual_add.cpp
   ops/wrapper/rmsnorm.cpp
+  ops/wrapper/rmsnorm_pack_tail.cpp
   ops/wrapper/rope.cpp
   ops/wrapper/sampling.cpp
   ops/wrapper/scalar.cpp

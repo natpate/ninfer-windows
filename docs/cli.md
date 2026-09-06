@@ -78,8 +78,9 @@ output capacity for the inserted suffix and the answer:
 
 GPU residency is frozen when the Engine starts:
 
-- no `--spec` omits MTP/DFlash weights and state and the optimized proposal head;
-- `--spec mtp` loads only MTP, while `--spec dflash` loads only the 35B-A3B DFlash backend;
+- no `--spec` omits MTP/DFlash/DFlash2 weights and state and the optimized proposal head;
+- `--spec mtp`, `--spec dflash` (35B-A3B), and `--spec dflash2` (Qwen3.8-27B) load only
+  the selected speculative backend;
 - a speculative backend with the full proposal head omits the optimized proposal head;
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
@@ -88,8 +89,8 @@ GPU residency is frozen when the Engine starts:
   checkpoint StateImage or capture a continuation that no later request could consume.
 
 The complete `.ninfer` inventory is still validated. These choices are not lazy loading: an Engine
-started without Vision rejects media and cannot enable Vision later. DFlash and Vision may be
-enabled together; DFlash applies to generated-text decode after multimodal prefill and does not
+started without Vision rejects media and cannot enable Vision later. DFlash/DFlash2 and Vision may
+be enabled together; these backends apply to generated-text decode after multimodal prefill and does not
 accelerate Vision encode. The default speculative and Vision settings produce the smallest resident
 profile.
 
@@ -155,7 +156,8 @@ long-decode, and long-context inputs.
 ## Speculative decoding
 
 Speculative decoding is disabled by default. Select MTP with one to five draft positions, or the
-35B-A3B DFlash backend with one to fifteen. DFlash may be combined with `--vision`.
+35B-A3B DFlash or Qwen3.8-27B DFlash2 backend with one to fifteen. Both masked-draft backends
+may be combined with `--vision`.
 `--lm-head-draft` selects the optimized proposal head and requires a selected backend:
 
 ```bash
@@ -178,10 +180,17 @@ For DFlash:
   --spec dflash --draft-tokens 7 --lm-head-draft
 ```
 
-MTP and DFlash cannot be enabled together. The published [performance results](performance.md)
+For Qwen3.8-27B artifacts containing the DFlash2 companion weights, select
+`--spec dflash2 --draft-tokens 7`, optionally with `--lm-head-draft` and `--vision`.
+DFlash2 accepts every draft count from 1 through 15; seven is the checkpoint recommendation.
+Both `groupwise-int` and `nvfp4` artifacts use the same Engine route, including CUDA Graph,
+concurrent requests, sampling penalties, and prefix reuse. An artifact without the companion
+weights reports a missing DFlash2 capability when selected.
+
+Only one speculative backend can be enabled per Engine. The published [performance results](performance.md)
 use MTP with three draft tokens and DFlash with seven draft tokens (block length eight), both with
 the optimized proposal head. DFlash accepts one to fifteen draft tokens; seven forms the measured
-block length eight, while fifteen uses the full native block.
+block length eight, while fifteen uses the maximum supported block length sixteen.
 
 ## Common options
 
@@ -195,8 +204,8 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
 | `--kv-dtype bf16\|int8\|fp8\|nvfp4\|k8v4` | KV-cache storage | `bf16` |
-| `--spec mtp\|dflash` | speculative backend | off |
-| `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
+| `--spec mtp\|dflash\|dflash2` | speculative backend | off |
+| `--draft-tokens N` | MTP `1..5`; DFlash/DFlash2 `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |

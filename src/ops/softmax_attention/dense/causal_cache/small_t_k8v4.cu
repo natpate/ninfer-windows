@@ -95,8 +95,8 @@ void causal_attention_small_t_k8v4_launch_for(const Tensor& q, CacheInput input,
                                               Tensor& partial_acc, Tensor& partial_m,
                                               Tensor& partial_l, Tensor& out, cudaStream_t stream) {
     const auto logical_capacity = static_cast<std::int32_t>(envelope.max_visible_keys);
-    const auto splits = causal_attention_split_capacity(Geometry::QHeads, invocation.width,
-                                                        cache.storage, envelope);
+    const auto splits           = causal_attention_split_capacity(
+        Geometry::QHeads, invocation.width, cache.storage, envelope, invocation.batch_size);
 
     const auto launch_partial = [&]<int Tokens, bool MultiBatch, bool Masked>() {
         launch_k8v4_partial<Geometry, Tokens, MultiBatch, Masked>(
@@ -137,6 +137,18 @@ void causal_attention_small_t_k8v4_launch_for(const Tensor& q, CacheInput input,
     case 6:
         dispatch_metadata.template operator()<6>();
         break;
+    case 7:
+        if constexpr (Geometry::QHeads == 24) {
+            dispatch_metadata.template operator()<7>();
+            break;
+        }
+        throw std::invalid_argument("unsupported query-row tile");
+    case 8:
+        if constexpr (Geometry::QHeads == 24) {
+            dispatch_metadata.template operator()<8>();
+            break;
+        }
+        throw std::invalid_argument("unsupported query-row tile");
     default:
         throw std::invalid_argument("causal_attention_small_t_k8v4_launch: unsupported T");
     }

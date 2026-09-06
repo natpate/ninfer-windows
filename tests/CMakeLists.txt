@@ -146,6 +146,10 @@ ninfer_add_test(ninfer_qwen3_6_27b_score_real_test
   SOURCES targets/qwen3_6_27b/test_engine_score_real.cpp
   LIBRARIES ninfer_engine)
 set_tests_properties(ninfer_qwen3_6_27b_score_real_test PROPERTIES SKIP_RETURN_CODE 77)
+ninfer_add_test(ninfer_qwen3_8_27b_dflash2_real_test
+  SOURCES targets/qwen3_6_27b/test_engine_dflash2_real.cpp
+  LIBRARIES ninfer_engine)
+set_tests_properties(ninfer_qwen3_8_27b_dflash2_real_test PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_test(ninfer_qwen3_6_27b_load_plan_test
   SOURCES targets/qwen3_6_27b/test_load_plan.cpp
   NEEDS_SOURCE_DIR
@@ -153,7 +157,7 @@ ninfer_add_test(ninfer_qwen3_6_27b_load_plan_test
 target_include_directories(ninfer_qwen3_6_27b_load_plan_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export)
-target_link_libraries(ninfer_qwen3_6_27b_load_plan_test PRIVATE CUDA::cudart)
+target_link_libraries(ninfer_qwen3_6_27b_load_plan_test PRIVATE ${NINFER_CUDART_TARGET})
 set_tests_properties(ninfer_qwen3_6_27b_load_plan_test PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_test(ninfer_qwen3_6_35b_a3b_real_test
   SOURCES targets/qwen3_6_35b_a3b/test_engine_real.cpp
@@ -170,7 +174,7 @@ ninfer_add_test(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test
 target_include_directories(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_35b_a3b/export)
-target_link_libraries(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test PRIVATE CUDA::cudart)
+target_link_libraries(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test PRIVATE ${NINFER_CUDART_TARGET})
 set_tests_properties(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -233,6 +237,7 @@ set(ninfer_op_tests
   residual_add
   sigmoid_mul
   rmsnorm
+  rmsnorm_pack_tail
   gated_rmsnorm
   l2norm
   gated_delta_net
@@ -247,7 +252,9 @@ set(ninfer_op_tests
   sampling
   scalar
   cast
+  prepare_ragged_prefix
   scatter
+  scatter_bf16_batch
   target_logprobs
   position)
 foreach(op IN LISTS ninfer_op_tests)
@@ -255,6 +262,13 @@ foreach(op IN LISTS ninfer_op_tests)
     SOURCES ops/test_${op}.cpp
     LIBRARIES ninfer_ops)
 endforeach()
+
+ninfer_add_op_test(ninfer_linear_topk_test
+  SOURCES ops/test_linear_topk.cu
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_candidate_selector_test
+  SOURCES ops/test_candidate_selector.cpp
+  LIBRARIES ninfer_ops)
 
 # Stateful, fused, and exact-shape Ops remain central even when the current implementation domain
 # is one checkpoint/device.
@@ -277,6 +291,12 @@ ninfer_add_op_test(ninfer_sliding_window_attention_test
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_kv_cache_append_test
   SOURCES ops/test_kv_cache_append.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_rmsnorm_rope_test
+  SOURCES ops/test_rmsnorm_rope.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_context_kv_materialize_test
+  SOURCES ops/test_context_kv_materialize.cpp
   LIBRARIES ninfer_ops)
 add_test(NAME ninfer_kv_cache_append_nvfp4_test
   COMMAND ninfer_kv_cache_append_test --nvfp4-only)
@@ -317,6 +337,12 @@ ninfer_add_op_test(ninfer_attn_input_proj_test
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_gdn_input_proj_test
   SOURCES ops/test_gdn_input_proj.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_dynamic_grouped_conv_prepare_test
+  SOURCES ops/test_dynamic_grouped_conv_prepare.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_linear_dynamic_grouped_conv_add_test
+  SOURCES ops/test_linear_dynamic_grouped_conv_add.cpp
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_gdn_input_proj_conv_snapshot_test
   SOURCES ops/test_gdn_input_proj_conv_snapshot.cpp

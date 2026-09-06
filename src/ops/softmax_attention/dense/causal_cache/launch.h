@@ -25,12 +25,11 @@ struct CausalSmallTInvocation {
 
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
-                                             CausalAttentionExecutionEnvelope envelope);
-
-bool causal_attention_uses_small_t(std::int32_t tokens);
+                                             CausalAttentionExecutionEnvelope envelope,
+                                             std::int32_t batch_size = 1);
 
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
-                                                    std::int32_t batch_size,
+                                                    std::int32_t batch_size, KvCacheStorage storage,
                                                     CausalAttentionExecutionEnvelope envelope);
 
 const char* causal_attention_route_name(CausalAttentionRoute route);

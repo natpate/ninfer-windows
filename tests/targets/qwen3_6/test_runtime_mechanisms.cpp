@@ -151,8 +151,10 @@ void test_decoder_layout() {
 void test_round_layout() {
     ninfer::LayoutBuilder builder;
     q36::RoundStateLayout round = q36::begin_round_state_layout(
-        builder, q36::RoundStateSpec{
-                     .hidden = 32, .output_rows = 128, .draft_window = 5, .enable_mtp = true});
+        builder, q36::RoundStateSpec{.hidden       = 32,
+                                     .output_rows  = 128,
+                                     .draft_window = 5,
+                                     .backend      = ninfer::SpeculativeBackend::Mtp});
     const ninfer::TensorRegion exact_prefill =
         builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
     q36::complete_round_state_layout(builder, round);
@@ -173,9 +175,10 @@ void test_round_layout() {
 
     ninfer::LayoutBuilder speculative_builder;
     q36::RoundStateLayout dflash = q36::begin_round_state_layout(
-        speculative_builder,
-        q36::RoundStateSpec{
-            .hidden = 32, .output_rows = 128, .draft_window = 15, .enable_dflash = true});
+        speculative_builder, q36::RoundStateSpec{.hidden       = 32,
+                                                 .output_rows  = 128,
+                                                 .draft_window = 15,
+                                                 .backend = ninfer::SpeculativeBackend::DFlash});
     q36::complete_round_state_layout(speculative_builder, dflash);
     (void)speculative_builder.finish(256);
     expect(dflash.logits.shape[1] == 1 && dflash.dflash_prefill.has_value() &&

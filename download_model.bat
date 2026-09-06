@@ -41,8 +41,8 @@ echo   ====================================================
 echo.
 echo    [1]  Qwen3.6-27B        groupwise-int   qwen3_6_27b.ninfer         ~16.3 GiB
 echo    [2]  Qwen3.6-27B NVFP4  nvfp4           qwen3_6_27b_nvfp4.ninfer   ~17.1 GiB
-echo    [3]  Qwen3.8-27B        groupwise-int   qwen3_8_27b.ninfer          ~17.0 GiB
-echo    [4]  Qwen3.8-27B NVFP4  nvfp4           qwen3_8_27b_nvfp4.ninfer   ~20.0 GiB
+echo    [3]  Qwen3.8-27B        groupwise-int   qwen3_8_27b.ninfer          ~19.0 GiB
+echo    [4]  Qwen3.8-27B NVFP4  nvfp4           qwen3_8_27b_nvfp4.ninfer   ~22.1 GiB
 echo    [5]  Qwen3.6-35B-A3B    groupwise-int   qwen3_6_35b_a3b.ninfer     ~21.2 GiB
 echo.
 echo    [0]  cancel
@@ -81,14 +81,14 @@ if "%CHOICE%"=="1" (
     set "LABEL=Qwen3.8-27B (groupwise-int)"
     set "REPO=neroued/Qwen3.8-27B-NInfer"
     set "FILE=qwen3_8_27b.ninfer"
-    set "EXP_BYTES=18210531328"
-    set "EXP_SHA=eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
+    set "EXP_BYTES=20437336576"
+    set "EXP_SHA=0634abb07024221de141456cf04a42ab74b18bc38e1b781c6eb2e062a467eec3"
 ) else if "%CHOICE%"=="4" (
     set "LABEL=Qwen3.8-27B (nvfp4)"
     set "REPO=neroued/Qwen3.8-27B-nvfp4-NInfer"
     set "FILE=qwen3_8_27b_nvfp4.ninfer"
-    set "EXP_BYTES=21492695040"
-    set "EXP_SHA=bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32"
+    set "EXP_BYTES=23719496192"
+    set "EXP_SHA=552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c"
 ) else (
     set "LABEL=Qwen3.6-35B-A3B (groupwise-int)"
     set "REPO=neroued/Qwen3.6-35B-A3B-NInfer"

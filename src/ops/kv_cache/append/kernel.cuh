@@ -300,14 +300,13 @@ __launch_bounds__(256) __global__
 
 inline constexpr int kKVCacheAppendPrefixHeadDim = 128;
 inline constexpr int kKVCacheAppendPrefixHeads   = 8;
-inline constexpr int kKVCacheAppendPrefixWindow  = 4096;
 inline constexpr int kKVCacheAppendPrefixPage    = 64;
 
 __device__ __forceinline__ void kv_cache_append_prefix_copy_cyclic_unit(
     const __nv_bfloat16* __restrict__ k, const __nv_bfloat16* __restrict__ v,
     __nv_bfloat16* __restrict__ cache_k, __half* __restrict__ cache_v, int token, int unit_in_token,
     int slot, int padded_capacity) {
-    constexpr int ElementsPerUnit = 16;
+    constexpr int ElementsPerUnit = 8;
     constexpr int UnitsPerHead    = kKVCacheAppendPrefixHeadDim / ElementsPerUnit;
     const int kv_head             = unit_in_token / UnitsPerHead;
     const int d                   = (unit_in_token - kv_head * UnitsPerHead) * ElementsPerUnit;
@@ -318,14 +317,10 @@ __device__ __forceinline__ void kv_cache_append_prefix_copy_cyclic_unit(
                              static_cast<std::int64_t>(kKVCacheAppendPrefixHeadDim) *
                                  (slot + static_cast<std::int64_t>(padded_capacity) * kv_head);
 
-    const int4 k0 = *reinterpret_cast<const int4*>(&k[src]);
-    const int4 v0 = bf16x8_bits_to_f16x8_bits(*reinterpret_cast<const int4*>(&v[src]));
-    *reinterpret_cast<int4*>(&cache_k[dst]) = k0;
-    *reinterpret_cast<int4*>(&cache_v[dst]) = v0;
-    const int4 k1                           = *reinterpret_cast<const int4*>(&k[src + 8]);
-    const int4 v1 = bf16x8_bits_to_f16x8_bits(*reinterpret_cast<const int4*>(&v[src + 8]));
-    *reinterpret_cast<int4*>(&cache_k[dst + 8]) = k1;
-    *reinterpret_cast<int4*>(&cache_v[dst + 8]) = v1;
+    const int4 key   = *reinterpret_cast<const int4*>(&k[src]);
+    const int4 value = bf16x8_bits_to_f16x8_bits(*reinterpret_cast<const int4*>(&v[src]));
+    *reinterpret_cast<int4*>(&cache_k[dst]) = key;
+    *reinterpret_cast<int4*>(&cache_v[dst]) = value;
 }
 
 __device__ __forceinline__ void kv_cache_append_prefix_copy_paged_unit(
@@ -354,17 +349,21 @@ __device__ __forceinline__ void kv_cache_append_prefix_copy_paged_unit(
     *reinterpret_cast<int4*>(&cache_v[dst + 8]) = v1;
 }
 
+template <int Capacity, int Threads>
 __global__ void kv_cache_append_prefix_cyclic_kernel(
     const __nv_bfloat16* __restrict__ k, const __nv_bfloat16* __restrict__ v,
     const std::int32_t* __restrict__ positions, const std::int32_t* __restrict__ counts,
     const std::int32_t* __restrict__ lanes, __nv_bfloat16* __restrict__ cache_k,
     __half* __restrict__ cache_v, int min_count, int max_count, int width, int padded_capacity) {
-    constexpr int UnitsPerToken  = kKVCacheAppendPrefixHeads * 8;
-    constexpr int TokensPerBlock = 256 / UnitsPerToken;
-    static_assert(TokensPerBlock * UnitsPerToken == 256);
-    const int batch = static_cast<int>(blockIdx.y);
-    const int count = counts[batch];
-    if (count < min_count || count > max_count) return;
+    static_assert(Capacity == 2048 || Capacity == 4096);
+    static_assert((Capacity & (Capacity - 1)) == 0);
+    constexpr int UnitsPerToken = kKVCacheAppendPrefixHeads * kKVCacheAppendPrefixHeadDim / 8;
+    const int unit              = static_cast<int>(blockIdx.x) * Threads + threadIdx.x;
+    const int token             = unit / UnitsPerToken;
+    const int unit_in_token     = unit % UnitsPerToken;
+    const int batch             = static_cast<int>(blockIdx.y);
+    const int count             = counts[batch];
+    if (count < min_count || count > max_count || token >= count) return;
 
     constexpr std::int64_t ElementsPerToken =
         kKVCacheAppendPrefixHeadDim * kKVCacheAppendPrefixHeads;
@@ -377,13 +376,8 @@ __global__ void kv_cache_append_prefix_cyclic_kernel(
     cache_k += cache_offset;
     cache_v += cache_offset;
 
-    const int local         = static_cast<int>(threadIdx.x);
-    const int local_token   = local / UnitsPerToken;
-    const int unit_in_token = local - local_token * UnitsPerToken;
-    const int token         = static_cast<int>(blockIdx.x) * TokensPerBlock + local_token;
-    if (token >= count) return;
     const int position = positions[token];
-    const int slot     = position & (kKVCacheAppendPrefixWindow - 1);
+    const int slot     = position & (Capacity - 1);
     kv_cache_append_prefix_copy_cyclic_unit(k, v, cache_k, cache_v, token, unit_in_token, slot,
                                             padded_capacity);
 }

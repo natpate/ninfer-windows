@@ -7,16 +7,16 @@
 //     straight into smem (no dequant). The int32 MMA output is rescaled per 64-group by
 //     qs[row,g]*ks[key,g]. This halves the QK MMA count vs bf16 and removes the
 //     entire K dequant.
-//   * PV stays bf16 (V is quantized per key, so its scale cannot be factored out
+//   * PV uses FP16 (V is quantized per key, so its scale cannot be factored out
 //     of a key-contracted int8 accumulation): V int8 is staged, dequanted once to
-//     a bf16 tile, then the existing bf16 PV MMA runs. V is still read from DRAM
+//     an FP16 tile, then FP16 PV MMA runs with FP32 accumulation. V is still read from DRAM
 //     as int8, so the bandwidth win is kept.
 //   * All keys (history AND the current/diagonal tokens) are read from the
 //     quantized cache; the fused append writes the new tokens first and a
 //     __syncthreads orders the in-block readback. No from_new special-casing.
 //
 // Standalone from the bf16 kernel; shared scaffolding (layout constants, ldmatrix
-// helpers, the s8/bf16 MMA helpers, the reducer) lives in causal_attention_small_t.cuh.
+// helpers, the s8/f16 MMA helpers, the reducer) lives in causal_attention_small_t.cuh.
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -29,7 +29,7 @@
 
 namespace ninfer::ops {
 
-// Decode-specialized producer/consumer kernel for T=1..6. One producer warp per
+// Decode-specialized producer/consumer kernel for up to 48 query rows. One producer warp per
 // m16 row tile computes QK + online softmax, while all CTA warps partition the
 // tile's 256-wide PV output. This keeps each thread's PV accumulator at 16, 32,
 // or 64 floats instead of 128 and uses otherwise-idle warps for useful output
@@ -47,8 +47,8 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         std::int8_t* cache_v_i8, __half* cache_k_scale, __half* cache_v_scale,
         const std::int32_t* block_tables, const std::int32_t* valid_columns,
         const std::int32_t* table_rows, std::int32_t table_stride, std::int32_t full_width,
-        std::int32_t column_begin, std::int32_t logical_capacity, float scale,
-        __nv_bfloat16* partial_acc, float* partial_m, float* partial_l) {
+        std::int32_t column_begin, std::int32_t logical_capacity, float scale, float* partial_acc,
+        float* partial_m, float* partial_l) {
     constexpr int Wc                   = WarpsPerCta;
     constexpr int RowCount             = TokenTile * Geometry::GroupSize;
     constexpr int RowTiles             = (RowCount + 15) / 16;
@@ -71,7 +71,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     constexpr float Log2E         = 1.4426950408889634074f;
     constexpr unsigned FullMask   = 0xffffffffu;
 
-    static_assert(TokenTile >= 1 && TokenTile <= 6);
+    static_assert(TokenTile >= 1 && TokenTile * Geometry::GroupSize <= 48);
     static_assert(Bc == 32 || Bc == 64);
     static_assert(RowTiles >= 1 && RowTiles <= 3);
     static_assert(Wc % RowTiles == 0);
@@ -81,19 +81,19 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     // Keep Q in a compact dedicated tile so the producer can reload one
     // 64-dimension group at a time instead of carrying all eight fragments in
     // registers across the whole kernel. The main arena holds K i8, V i8, and
-    // V bf16 during the key loop.
+    // V FP16 during the key loop.
     __shared__ __align__(16) std::int8_t q_s[Br * D];
     __shared__ __align__(16) std::int8_t static_r_s[DynamicArena ? 16 : 4 * Bc * D];
     extern __shared__ __align__(16) std::int8_t dynamic_r_s[];
-    std::int8_t* r_s      = DynamicArena ? dynamic_r_s : static_r_s;
-    std::int8_t* q_i8     = q_s;
-    float* q_scale_tmp    = reinterpret_cast<float*>(r_s);
-    std::int8_t* k_i8     = r_s;
-    __nv_bfloat16* q_b16  = reinterpret_cast<__nv_bfloat16*>(q_i8);
-    __nv_bfloat16* k_b16  = reinterpret_cast<__nv_bfloat16*>(k_i8);
-    std::int8_t* v_i8     = r_s + Bc * D;
-    __nv_bfloat16* v_bf16 = reinterpret_cast<__nv_bfloat16*>(r_s + 2 * Bc * D);
-    __shared__ __align__(16) __nv_bfloat16 p_s[Br * Bc];
+    std::int8_t* r_s     = DynamicArena ? dynamic_r_s : static_r_s;
+    std::int8_t* q_i8    = q_s;
+    float* q_scale_tmp   = reinterpret_cast<float*>(r_s);
+    std::int8_t* k_i8    = r_s;
+    __nv_bfloat16* q_b16 = reinterpret_cast<__nv_bfloat16*>(q_i8);
+    __nv_bfloat16* k_b16 = reinterpret_cast<__nv_bfloat16*>(k_i8);
+    std::int8_t* v_i8    = r_s + Bc * D;
+    __half* v_f16        = reinterpret_cast<__half*>(r_s + 2 * Bc * D);
+    __shared__ __align__(16) __half p_s[Br * Bc];
     __shared__ float alpha_s[Br];
     __shared__ __align__(16) __half k_scale_s[Bc * Groups];
     __shared__ __align__(16) __half v_scale_s[Bc * Groups];
@@ -150,7 +150,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             causal_small_t_tc_row_to_qt<Geometry>(row, TokenTile, kv_head, q_head, token);
             if (causal_valid_q_head<Geometry>(kv_head, q_head)) {
                 partial_acc[causal_partial_acc_index<Geometry>(q_head, d, token, split,
-                                                               TokenTile)] = __float2bfloat16(0.0f);
+                                                               TokenTile)] = 0.0f;
             }
         }
     };
@@ -390,7 +390,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         // stream/dequant V.
         if (warp < RowTiles) {
             const int producer_row_base = warp * 16;
-            __nv_bfloat16* p_sw         = &p_s[producer_row_base * Bc];
+            __half* p_sw                = &p_s[producer_row_base * Bc];
             float score[QKNt][4];
 #pragma unroll
             for (int nt = 0; nt < QKNt; ++nt) {
@@ -506,12 +506,12 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                                       : 0.0f;
                 bl0 += p00 + p01;
                 bl1 += p10 + p11;
-                p_sw[gid * Bc + causal_small_t_tc_swz32(gid, col0)] = __float2bfloat16(p00);
-                p_sw[gid * Bc + causal_small_t_tc_swz32(gid, col1)] = __float2bfloat16(p01);
+                p_sw[gid * Bc + causal_small_t_tc_swz32(gid, col0)] = __float2half_rn(p00);
+                p_sw[gid * Bc + causal_small_t_tc_swz32(gid, col1)] = __float2half_rn(p01);
                 p_sw[(gid + 8) * Bc + causal_small_t_tc_swz32(gid + 8, col0)] =
-                    __float2bfloat16(p10);
+                    __float2half_rn(p10);
                 p_sw[(gid + 8) * Bc + causal_small_t_tc_swz32(gid + 8, col1)] =
-                    __float2bfloat16(p11);
+                    __float2half_rn(p11);
             }
             bl0 = warp_sum<4>(bl0, FullMask);
             bl1 = warp_sum<4>(bl1, FullMask);
@@ -528,17 +528,28 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const int loader_tid = tid - ProducerThreads;
 #pragma unroll 1
             for (int chunk = loader_tid; chunk < Bc * (D / 8); chunk += VLoaderThreads) {
-                const int key_l    = chunk / (D / 8);
-                const int dc       = chunk - key_l * (D / 8);
-                const int d        = dc * 8;
-                const int key      = k0 + key_l;
-                __nv_bfloat16* dst = &v_bf16[key_l * D + causal_small_t_tc_swz(key_l, d)];
+                const int key_l = chunk / (D / 8);
+                const int dc    = chunk - key_l * (D / 8);
+                const int d     = dc * 8;
+                const int key   = k0 + key_l;
+                __half* dst     = &v_f16[key_l * D + causal_small_t_tc_swz(key_l, d)];
                 if (key >= split_start && key < split_end) {
                     const int grp = d >> 6;
                     float vs      = 0.0f;
                     if ((lane & 7) == 0) { vs = __half2float(v_scale_s[key_l * Groups + grp]); }
-                    vs = __shfl_sync(FullMask, vs, grp * 8);
-                    store_vec(dst, kv_cache_int8_dequant_i8x8_from(&v_i8[key_l * D + d], vs));
+                    vs                = __shfl_sync(FullMask, vs, grp * 8);
+                    const int2 raw    = load_vec<int2>(&v_i8[key_l * D + d]);
+                    const auto* codes = reinterpret_cast<const std::int8_t*>(&raw);
+                    int4 values;
+                    values.x = pack_f16x2(static_cast<float>(codes[0]) * vs,
+                                          static_cast<float>(codes[1]) * vs);
+                    values.y = pack_f16x2(static_cast<float>(codes[2]) * vs,
+                                          static_cast<float>(codes[3]) * vs);
+                    values.z = pack_f16x2(static_cast<float>(codes[4]) * vs,
+                                          static_cast<float>(codes[5]) * vs);
+                    values.w = pack_f16x2(static_cast<float>(codes[6]) * vs,
+                                          static_cast<float>(codes[7]) * vs);
+                    store_vec(dst, values);
                 } else {
                     store_vec(dst, make_int4(0, 0, 0, 0));
                 }
@@ -558,7 +569,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         const int consumer_tile     = warp % RowTiles;
         const int consumer_slice    = warp / RowTiles;
         const int consumer_row_base = consumer_tile * 16;
-        __nv_bfloat16* p_consumer   = &p_s[consumer_row_base * Bc];
+        __half* p_consumer          = &p_s[consumer_row_base * Bc];
         const float alpha0          = alpha_s[consumer_row_base + gid];
         const float alpha1          = alpha_s[consumer_row_base + gid + 8];
 #pragma unroll
@@ -584,9 +595,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 const int vrow = k * 16 + b_koff + b_rin;
                 const int vcol = global_n * 8;
                 ldmatrix_x2_t(vf[0], vf[1],
-                              smem_addr(&v_bf16[vrow * D + causal_small_t_tc_swz(vrow, vcol)]));
-                mma_bf16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
-                         vf[0], vf[1]);
+                              smem_addr(&v_f16[vrow * D + causal_small_t_tc_swz(vrow, vcol)]));
+                mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
+                        vf[0], vf[1]);
             }
         }
         if (has_next) { ninfer::ops::cp_wait<0>(); }
@@ -626,7 +637,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             causal_small_t_tc_row_to_qt<Geometry>(row0, TokenTile, kv_head, q_head, token);
             const std::int64_t dst =
                 causal_partial_acc_index<Geometry>(q_head, d0, token, split, TokenTile);
-            *reinterpret_cast<unsigned*>(&partial_acc[dst]) = pack_bf16x2(acc[n][0], acc[n][1]);
+            *reinterpret_cast<float2*>(&partial_acc[dst]) = make_float2(acc[n][0], acc[n][1]);
         }
         if (row1 < RowCount) {
             int q_head = 0;
@@ -634,7 +645,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             causal_small_t_tc_row_to_qt<Geometry>(row1, TokenTile, kv_head, q_head, token);
             const std::int64_t dst =
                 causal_partial_acc_index<Geometry>(q_head, d0, token, split, TokenTile);
-            *reinterpret_cast<unsigned*>(&partial_acc[dst]) = pack_bf16x2(acc[n][2], acc[n][3]);
+            *reinterpret_cast<float2*>(&partial_acc[dst]) = make_float2(acc[n][2], acc[n][3]);
         }
     }
 }

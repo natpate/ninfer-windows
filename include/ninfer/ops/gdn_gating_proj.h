@@ -78,7 +78,9 @@ void gdn_gating_proj(const Tensor& x, const Weight& ab_weight, const Tensor& A_l
  * through h. Private tensor-core operand staging remains an implementation choice. The tensor and
  * weight domains otherwise match the two-weight gdn_gating_proj form. The implementation may fuse
  * or compose its internal kernels for any positive T; that route is not observable at this
- * boundary.
+ * boundary. A contiguous [hidden,W,B] block is presented as the matrix with T=W*B; each
+ * column has its own norm and controls. DFlash2 target verification uses W=2..16, B=1..8
+ * (T<=128), without restricting the positive-T matrix contract.
  */
 void gdn_norm_gating_proj(const Tensor& x, const Tensor& norm_weight, float eps,
                           const Weight& a_weight, const Weight& b_weight, const Tensor& A_log,

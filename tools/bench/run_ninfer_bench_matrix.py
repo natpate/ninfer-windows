@@ -40,7 +40,7 @@ CONTEXT_CORE = ((512, 512), (2048, 512), (8192, 512))
 CONTEXT_FULL_EXTRA = ((32768, 256), (65536, 128))
 PRIMARY_KS = (0, 3, 5)
 SWEEP_KS = (0, 1, 2, 3, 4, 5)
-REPORT_SCHEMA_VERSION = 13
+REPORT_SCHEMA_VERSION = 14
 REPORT_ARTIFACT_TYPE = "ninfer_bench_report"
 REPORT_TOOL = "ninfer_bench"
 
@@ -64,8 +64,7 @@ def pair_list(values: Iterable[tuple[int, int]]) -> str:
 
 
 def mtp_args(k: int) -> tuple[str, ...]:
-    args = ("--mtp-draft-tokens", str(k))
-    return (*args, "--lm-head-draft") if k > 0 else args
+    return ("--spec", "mtp", "--draft-tokens", str(k), "--lm-head-draft") if k > 0 else ()
 
 
 def shell_join(command: Sequence[str]) -> str:
@@ -289,7 +288,8 @@ def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
             "kv_capacity": memory.get("kv_capacity"),
             "prefill_chunk": config.get("prefill_chunk"),
             "kv_cache": config.get("kv_cache"),
-            "mtp_draft_tokens": config.get("mtp_draft_tokens"),
+            "speculative_backend": config.get("speculative_backend"),
+            "draft_tokens": config.get("draft_tokens"),
             "proposal_head": config.get("proposal_head"),
             "decode_path": config.get("decode_path"),
             "decode_graph_primed": config.get("decode_graph_prime", {}).get("primed"),

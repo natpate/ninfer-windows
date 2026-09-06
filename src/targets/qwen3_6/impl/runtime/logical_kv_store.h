@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1434,14 +1435,21 @@ public:
         pages_->physical_pool().resize_reservation(address.reservation, 0);
     }
 
-    void materialize_to_tokens(KVAddressSpaceHandle handle, std::uint32_t tokens,
-                               cudaStream_t stream = nullptr) {
+    // Coverage is a lower bound. A speculative mapping may already extend beyond this stage's
+    // needs; only an explicit truncate releases it, and commit_frontier publishes valid tokens.
+    void ensure_mapped_to_tokens(KVAddressSpaceHandle handle, std::uint32_t tokens,
+                                 cudaStream_t stream = nullptr) {
         Address& address           = require_active(handle);
         const std::uint32_t target = pages_for_tokens(tokens);
-        if (target < address.page_count || target > entitlement(address)) {
-            throw std::invalid_argument("KV materialization exceeds active entitlement");
+        if (target > entitlement(address)) {
+            throw std::invalid_argument(
+                "KV coverage exceeds active entitlement: tokens=" + std::to_string(tokens) +
+                " required_pages=" + std::to_string(target) +
+                " mapped_pages=" + std::to_string(address.page_count) +
+                " reserved_pages=" + std::to_string(address.reservation.pages()) +
+                " entitlement=" + std::to_string(entitlement(address)));
         }
-        if (target == address.page_count) { return; }
+        if (target <= address.page_count) { return; }
         const std::uint32_t begin       = address.page_count;
         const std::uint32_t count       = target - begin;
         const std::size_t address_index = static_cast<std::size_t>(&address - addresses_.data());

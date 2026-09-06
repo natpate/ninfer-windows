@@ -150,9 +150,17 @@ std::vector<GraphExecutionProfile> Variant::mtp_graph_profiles(std::uint32_t cap
     return graph_profiles_through(capacity - 1, ends);
 }
 
-std::vector<GraphExecutionProfile> Variant::dflash_graph_profiles(std::uint32_t, std::uint32_t,
-                                                                  std::uint32_t) {
-    return {};
+std::vector<GraphExecutionProfile>
+Variant::dflash_graph_profiles(std::uint32_t capacity, std::uint32_t draft_window, std::uint32_t) {
+    if (capacity == 0 || draft_window == 0 || draft_window > maximum_dflash_draft_tokens) {
+        throw std::invalid_argument("invalid DFlash2 graph dimensions");
+    }
+    // Bounded attention envelopes; each tier owns its topology and can change kernel decomposition.
+    auto profiles = graph_profiles_through(capacity - 1, {96, 511, 2047, 8191, 32767});
+    for (std::size_t i = 0; i < profiles.size(); ++i) {
+        profiles[i].topology_class = static_cast<std::uint32_t>(i);
+    }
+    return profiles;
 }
 
 void Variant::attention_projection(const Tensor& hidden,

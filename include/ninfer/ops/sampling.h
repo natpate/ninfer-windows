@@ -17,6 +17,7 @@ enum SamplePurpose : std::int32_t {
     kSamplePurposeSpeculativeAccept     = 2,
     kSamplePurposeSpeculativeCorrection = 3,
     kSamplePurposeSpeculativeBonus      = 4,
+    kSamplePurposeDFlash2Proposal       = 5,
 };
 
 // Device-resident sampling parameters. token_counts is an optional device I32

@@ -47,7 +47,9 @@ Json base_request() {
                 {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})}};
 }
 
-OpenAIChatRequest parse(Json body) { return parse_chat_completion_request(body, limits()); }
+OpenAIChatRequest parse(Json body) {
+    return parse_chat_completion_request(body, limits(), "served-qwen");
+}
 
 ResolvedPromptSemantics semantics(const GenerationRequest& request) {
     ServeOptions server;
@@ -118,6 +120,17 @@ int test_request_envelope_and_sampling() {
                   !defaults.timings_per_token && !defaults.return_progress &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
+
+    Json omitted_model = base_request();
+    omitted_model.erase("model");
+    failures += check(parse(omitted_model).model == "served-qwen",
+                      "omitted model resolves to the single loaded model");
+    for (const Json& value : Json::array({nullptr, "", 42})) {
+        Json fallback = base_request();
+        fallback["model"] = value;
+        failures += check(parse(fallback).model == "served-qwen",
+                          "Windows model fallback accepts absent model names");
+    }
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;

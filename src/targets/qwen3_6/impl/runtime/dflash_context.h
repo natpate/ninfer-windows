@@ -12,7 +12,7 @@ namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
 struct DFlashPersistentState {
     CyclicKVCache& local;
-    qwen3_6::PagedKVCache full;
+    std::optional<qwen3_6::PagedKVCache> full;
     Tensor prefill_features;
     Tensor prefill_positions;
     Tensor pending_features;

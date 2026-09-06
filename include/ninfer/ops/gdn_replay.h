@@ -31,11 +31,15 @@ struct GdnReplayFoldRow {
  * strict no-op for the row: no record or state is read and neither recurrent state nor convolution
  * history is written. For a positive extent, the Op consumes raw key/value/{g,beta} records in
  * order, writes the final FP32 recurrent state, and sets convolution history to
- * tail_3(old_history || conv_record[0:commit_columns]).
+ * tail_3(old_history || conv_record[0:commit_columns]). Both state regions must be bit-identical
+ * to the corresponding Nth snapshot of the same full physical record-producing block, with the
+ * same initial state and represented inputs. Projection is not re-evaluated at the commit width.
  *
  * Construction validates the immutable record/state geometry, layout, address ranges and
  * disjointness once. execute() validates only active rows, state selectors and commit extents.
- * The bound record/state addresses must remain stable for the plan lifetime.
+ * The bound record/state addresses must remain stable for the plan lifetime. CUDA Graph capture
+ * copies row descriptors by value; replay consumes record/state contents at the bound addresses,
+ * while changing host row descriptors requires a new capture.
  *
  * The Op admits the two registered all-layer geometries only, owns no workspace or device
  * allocation, and does not read query or generate token output. The four record planes are

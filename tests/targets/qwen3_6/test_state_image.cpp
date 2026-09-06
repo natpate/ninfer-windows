@@ -32,7 +32,7 @@ struct PlannedPool {
     std::size_t bytes = 0;
 };
 
-PlannedPool plan_pool(bool dflash, std::int32_t slots = 4) {
+PlannedPool plan_pool(bool dflash, std::int32_t slots = 4, bool dflash2 = false) {
     q36::StateImageSpec spec{
         .linear =
             {
@@ -48,8 +48,13 @@ PlannedPool plan_pool(bool dflash, std::int32_t slots = 4) {
         .hidden = 7,
     };
     if (dflash) {
-        spec.dflash_local =
-            q36::DFlashLocalStateSpec{.layers = 2, .capacity = 17, .kv_heads = 2, .head_dim = 4};
+        spec.dflash_local = dflash2
+                                ? q36::DFlashLocalStateSpec{.layers   = 5,
+                                                            .capacity = 2048,
+                                                            .kv_heads = 8,
+                                                            .head_dim = 128}
+                                : q36::DFlashLocalStateSpec{
+                                      .layers = 2, .capacity = 17, .kv_heads = 2, .head_dim = 4};
     }
     ninfer::LayoutBuilder builder;
     q36::StateImageDeviceLayout layout = q36::plan_state_image_device_pool(builder, spec);
@@ -124,8 +129,13 @@ void expect_zero_slot(q36::StateImageDevicePool& pool, std::int32_t slot, std::s
     }
 }
 
-void test_host_roundtrip(bool dflash, ninfer::DeviceContext& device) {
-    PlannedPool planned = plan_pool(dflash, 2);
+void test_host_roundtrip(bool dflash, ninfer::DeviceContext& device, bool dflash2 = false) {
+    PlannedPool planned = plan_pool(dflash, 2, dflash2);
+    if (dflash2) {
+        expect(q36::dflash_local_transfer_work(planned.layout.host).payload_bytes ==
+                   40ULL * 1024 * 1024,
+               "DFlash2 local snapshot must transfer exactly 40 MiB");
+    }
     ninfer::DeviceArena arena(planned.bytes);
     q36::StateImageDevicePool pool({arena.base(), arena.capacity()}, planned.layout);
     fill_slot(pool, 0, dflash ? 0x19 : 0x25);
@@ -202,6 +212,7 @@ int main() {
 
     test_host_roundtrip(false, device);
     test_host_roundtrip(true, device);
+    test_host_roundtrip(true, device, true);
 
     return failures == 0 ? 0 : 1;
 }

@@ -1,9 +1,9 @@
 #pragma once
 
-// Asymmetric K8V4 split-KV causal attention for T=1..6. A CTA owns one KV head and all GQA query
-// heads, so each persistent K/V byte is streamed once. Q/K use the existing rotated, row-scaled
-// E4M3 native Tensor Core path. Rotated V uses group-16 packed NVFP4 and widens exactly to FP16 for
-// FP16/FP32 PV MMA. Split numerators and inverse rotation remain FP32.
+// Asymmetric K8V4 split-KV causal attention for up to 48 query rows. A CTA owns one KV head and all
+// GQA query heads, so each persistent K/V byte is streamed once. Q/K use the existing rotated,
+// row-scaled E4M3 native Tensor Core path. Rotated V uses group-16 packed NVFP4 and widens exactly
+// to FP16 for FP16/FP32 PV MMA. Split numerators and inverse rotation remain FP32.
 
 #include "ops/kv_cache/fp8_e4m3_row_codec.cuh"
 #include "ops/kv_cache/hadamard_d256.cuh"
@@ -49,7 +49,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     constexpr float Log2E              = 1.4426950408889634074F;
     constexpr unsigned FullMask        = 0xffffffffU;
 
-    static_assert(TokenTile >= 1 && TokenTile <= 6);
+    static_assert(TokenTile >= 1 && TokenTile * Geometry::GroupSize <= 48);
     static_assert(Bc == 32 || Bc == 64);
     static_assert(RowTiles >= 1 && RowTiles <= 3);
     static_assert(Wc > RowTiles && Wc % RowTiles == 0);
@@ -600,6 +600,15 @@ __launch_bounds__(256) __global__ void causal_attention_small_t_k8v4_reduce_outp
     int output_column = token;
     if constexpr (Offset) output_column += column_begin;
     if constexpr (MultiBatch) output_column += batch * full_width;
+    if constexpr (Masked) {
+        const int absolute_column = token + (Offset ? column_begin : 0);
+        if (absolute_column >= valid_columns[batch]) {
+            if (tid < kCausalHeadDim)
+                out[causal_q_index<Geometry>(q_head, tid, output_column)] = __float2bfloat16(0.0f);
+            return;
+        }
+    }
+
 
     if constexpr (MultiBatch) {
         partial_acc += static_cast<std::int64_t>(batch) * kCausalHeadDim * Geometry::QHeads *
@@ -609,64 +618,19 @@ __launch_bounds__(256) __global__ void causal_attention_small_t_k8v4_reduce_outp
     }
     const int active_splits =
         causal_small_t_quantized_active_splits<Geometry>(window, split_count, tokens);
-    __shared__ float reduce_or_weight[256];
+    __shared__ float weights[256], warp_sums[8], scalars[2];
     __shared__ float normalized[256];
-    float local_m = -CUDART_INF_F;
-    for (int split = tid; split < active_splits; split += 256) {
-        local_m = fmaxf(
-            local_m, partial_m[causal_partial_stat_index<Geometry>(q_head, token, split, tokens)]);
-    }
-    reduce_or_weight[tid] = local_m;
-    __syncthreads();
-    for (int stride = 128; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            reduce_or_weight[tid] = fmaxf(reduce_or_weight[tid], reduce_or_weight[tid + stride]);
-        }
-        __syncthreads();
-    }
-    const float head_m = reduce_or_weight[0];
+    const float head_l = causal_merge_split_statistics<Geometry>(
+        partial_m, partial_l, q_head, token, tokens, active_splits, weights, warp_sums, scalars);
 
-    float local_l = 0.0F;
-    for (int split = tid; split < active_splits; split += 256) {
-        const float tile_l =
-            partial_l[causal_partial_stat_index<Geometry>(q_head, token, split, tokens)];
-        if (tile_l > 0.0F && head_m > -CUDART_INF_F) {
-            local_l +=
-                tile_l *
-                expf(partial_m[causal_partial_stat_index<Geometry>(q_head, token, split, tokens)] -
-                     head_m);
-        }
-    }
-    reduce_or_weight[tid] = local_l;
-    __syncthreads();
-    for (int stride = 128; stride > 0; stride >>= 1) {
-        if (tid < stride) reduce_or_weight[tid] += reduce_or_weight[tid + stride];
-        __syncthreads();
-    }
-    const float head_l = reduce_or_weight[0];
-    if (tid < active_splits) {
-        const float tile_l =
-            partial_l[causal_partial_stat_index<Geometry>(q_head, token, tid, tokens)];
-        reduce_or_weight[tid] =
-            tile_l > 0.0F && head_l > 0.0F
-                ? expf(partial_m[causal_partial_stat_index<Geometry>(q_head, token, tid, tokens)] -
-                       head_m)
-                : 0.0F;
-    }
-    __syncthreads();
-    bool valid = true;
-    if constexpr (Masked) {
-        int absolute_column = token;
-        if constexpr (Offset) absolute_column += column_begin;
-        valid = absolute_column < valid_columns[batch];
-    }
     float numerator = 0.0F;
     for (int split = 0; split < active_splits; ++split) {
-        numerator +=
-            partial_acc[causal_partial_acc_index<Geometry>(q_head, tid, token, split, tokens)] *
-            reduce_or_weight[split];
+        if (weights[split] != 0.0f)
+            numerator +=
+                partial_acc[causal_partial_acc_index<Geometry>(q_head, tid, token, split, tokens)] *
+                weights[split];
     }
-    normalized[tid] = valid && head_l > 0.0F ? numerator / head_l : 0.0F;
+    normalized[tid] = head_l > 0.0F ? numerator / head_l : 0.0F;
     __syncthreads();
 
     if (tid >= 32) return;

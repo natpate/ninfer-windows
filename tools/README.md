@@ -22,7 +22,7 @@ for the selected tool.
 
 ## Artifact workflow
 
-The converters consume an official local BF16 checkpoint and write one complete `.ninfer`
+The converters consume their fixed local source checkpoints and write one complete `.ninfer`
 artifact. The paths below are placeholders for the maintainer's local checkpoint checkouts:
 
 ```bash
@@ -32,6 +32,7 @@ python3 -m tools.convert.qwen3_6_27b.convert \
 
 python3 -m tools.convert.qwen3_8_27b.convert \
   --model /path/to/Qwen3.8-27B \
+  --dflash2-model /path/to/Qwen3.8-27B-DFlash2 \
   --out out/qwen3_8_27b.ninfer
 
 python3 -m tools.convert.qwen3_6_35b_a3b.convert \

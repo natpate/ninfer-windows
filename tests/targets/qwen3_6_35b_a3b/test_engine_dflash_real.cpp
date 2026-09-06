@@ -1,4 +1,5 @@
 #include "ninfer/engine.h"
+#include "../qwen3_6/speculative_page_boundary.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -408,6 +409,7 @@ int main() {
 
     ninfer::Engine engine(dflash_engine_options(artifact, ninfer::ProposalHead::Optimized, 4352));
     if (const int result = verify_dflash_load(engine); result != 0) { return result; }
+    ninfer::test::speculative_page_boundary(engine);
     engine.reset_memory_peaks();
     const ninfer::GenerationResult dflash =
         engine.generate(engine.prepare_tokens(prompt), greedy_options(24, false));

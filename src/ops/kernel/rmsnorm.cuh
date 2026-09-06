@@ -28,11 +28,12 @@ __device__ __forceinline__ float rmsnorm_epilogue(float x, float inv, float weig
 // Fast geometry for D in {64, 128, 192, 256}. One warp owns one row, keeps the input in
 // registers, and uses only warp shuffles for the reduction. Block is a scheduling choice rather
 // than part of the row geometry.
-template <RmsEpilogue Epilogue, int Block, bool Prefetch>
+template <RmsEpilogue Epilogue, int Block, bool Prefetch, int FixedD = 0>
 __launch_bounds__(Block) __global__
     void rmsnorm_warp_bf16x2_kernel(const __nv_bfloat162* x, const __nv_bfloat162* weight,
-                                    const __nv_bfloat162* z, __nv_bfloat162* out, std::int32_t d,
-                                    std::int64_t rows, float eps) {
+                                    const __nv_bfloat162* z, __nv_bfloat162* out,
+                                    std::int32_t input_d, std::int64_t rows, float eps) {
+    const int d = FixedD ? FixedD : input_d;
     static_assert(Block % kWarpSize == 0);
     constexpr int kWarpsPerBlock   = Block / kWarpSize;
     constexpr int kMaxPairsPerLane = 4;
@@ -136,11 +137,12 @@ __launch_bounds__(Block) __global__
 
 // Fast geometry for wide rows. One CTA owns one row and keeps up to MaxPairsPerThread BF16x2
 // values per lane. The launcher admits only widths evenly divisible by the CTA vector span.
-template <RmsEpilogue Epilogue, int Block, int MaxPairsPerThread, bool Prefetch>
+template <RmsEpilogue Epilogue, int Block, int MaxPairsPerThread, bool Prefetch, int FixedD = 0>
 __launch_bounds__(Block) __global__
     void rmsnorm_cta_bf16x2_kernel(const __nv_bfloat162* x, const __nv_bfloat162* weight,
-                                   const __nv_bfloat162* z, __nv_bfloat162* out, std::int32_t d,
-                                   std::int64_t rows, float eps) {
+                                   const __nv_bfloat162* z, __nv_bfloat162* out,
+                                   std::int32_t input_d, std::int64_t rows, float eps) {
+    const int d = FixedD ? FixedD : input_d;
     static_assert(Block % kWarpSize == 0);
     const std::int64_t row = static_cast<std::int64_t>(blockIdx.x);
     if (row >= rows) { return; }

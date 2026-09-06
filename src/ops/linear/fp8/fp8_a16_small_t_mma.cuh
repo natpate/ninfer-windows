@@ -18,11 +18,12 @@
 
 namespace ninfer::ops::detail {
 
-template <class Geometry, int ActiveTokens, class Schedule, class Output = Fp8ContiguousOutput>
+template <class Geometry, int ActiveTokens, class Schedule, class Output = Fp8ContiguousOutput,
+          bool MaskedColumns = false>
 __global__
 __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a16_small_t_mma_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ weight_codes,
-    const __nv_bfloat16* __restrict__ row_scales, Output output) {
+    const __nv_bfloat16* __restrict__ row_scales, Output output, int columns = ActiveTokens) {
     constexpr int kHidden     = Geometry::kInputRows;
     constexpr int kTileK      = Schedule::kTileKPerWarp;
     constexpr int kWarps      = Schedule::kKWarps;
@@ -50,12 +51,13 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a16_sm
     auto& code_shared = shared.staging.codes;
     auto& x_shared    = shared.staging.activations;
 
-    const int tid  = static_cast<int>(threadIdx.x);
-    const int warp = tid >> 5;
-    const int lane = tid & 31;
-    const int gid  = lane >> 2;
-    const int lid  = lane & 3;
-    const int row0 = static_cast<int>(blockIdx.x) * kRowsPerCta;
+    const int tid          = static_cast<int>(threadIdx.x);
+    const int warp         = tid >> 5;
+    const int lane         = tid & 31;
+    const int gid          = lane >> 2;
+    const int lid          = lane & 3;
+    const int row0         = static_cast<int>(blockIdx.x) * kRowsPerCta;
+    const int live_columns = MaskedColumns ? columns : ActiveTokens;
 
     const auto stage_activation = [&](int group_k0) {
         constexpr auto kActivationCache =
@@ -69,17 +71,17 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a16_sm
             const int k8    = item - token * (kTileK / 8);
             auto* destination =
                 &x_shared[warp][token * kTileK + fp8_a16_shared_col_64(token, k8 * 8)];
-            if constexpr (!kPadded || ActiveTokens == kTileTokens) {
+            if constexpr (!MaskedColumns && (!kPadded || ActiveTokens == kTileTokens)) {
                 cp_async<16, kActivationCache>(destination,
                                                x + static_cast<std::int64_t>(token) * kHidden +
                                                    group_k0 + warp * kTileK + k8 * 8);
             } else {
-                const int source_token = token < ActiveTokens ? token : 0;
+                const int source_token = token < live_columns ? token : 0;
                 cp_async_zfill<16, kActivationCache>(
                     destination,
                     x + static_cast<std::int64_t>(source_token) * kHidden + group_k0 +
                         warp * kTileK + k8 * 8,
-                    token < ActiveTokens ? 16 : 0);
+                    token < live_columns ? 16 : 0);
             }
         }
     };
@@ -209,11 +211,11 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void fp8_a16_sm
                 sum.w += value.w;
             }
             const int token0 = token_mma * 8 + 2 * lid;
-            if (token0 < ActiveTokens) {
+            if (token0 < live_columns) {
                 output.store(row0 + gid, token0, sum.x * top_scale);
                 output.store(row0 + gid + 8, token0, sum.z * bottom_scale);
             }
-            if (token0 + 1 < ActiveTokens) {
+            if (token0 + 1 < live_columns) {
                 output.store(row0 + gid, token0 + 1, sum.y * top_scale);
                 output.store(row0 + gid + 8, token0 + 1, sum.w * bottom_scale);
             }

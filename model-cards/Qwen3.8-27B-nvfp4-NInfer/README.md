@@ -125,17 +125,17 @@ use row-scaled FP8. BF16 control weights and the registered MTP and Vision alloc
 | Field | Value |
 |---|---|
 | Filename | `qwen3_8_27b_nvfp4.ninfer` |
-| Size | 21,492,695,040 bytes (20.02 GiB) |
-| SHA-256 | `bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32` |
+| Size | 23,719,496,192 bytes (22.09 GiB) |
+| SHA-256 | `552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c` |
 | Container version | 2 |
 | NInfer model ID | `qwen3.8-27b` |
 | NInfer weights ID | `nvfp4` |
 | NInfer target key | `qwen3_8_27b` |
-| Stored objects | 1,124 (1,118 tensors and 6 resources) |
+| Stored objects | 1,190 (1,184 tensors and 6 resources) |
 | NVFP4 tensors | 112 |
 | Row-scaled FP8 tensors | 146 |
 
-The file contains the registered Text, Vision, MTP, optimized proposal-head, tokenizer,
+The file contains the registered Text, Vision, MTP, DFlash2, optimized proposal-head, tokenizer,
 chat-template, generation, and media-processor objects required by NInfer. Source-derived NVFP4 and
 FP8 words are preserved without decode and requantization; only the official BF16 token embedding
 is encoded locally as row-scaled FP8.
@@ -144,14 +144,21 @@ Verify a downloaded file with:
 
 ```bash
 printf '%s  %s\n' \
-  'bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32' \
+  '552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c' \
   'qwen3_8_27b_nvfp4.ninfer' | sha256sum --check
 ```
+
+This release includes the complete DFlash2 companion weights from
+`z-lab/Qwen3.8-27B-DFlash2` at revision
+`50307d4c4cde6860d4eee73e2547cd786fe8e8a4`. Select
+`--spec dflash2 --draft-tokens 7 --lm-head-draft`; draft counts 1..15 are supported.
+DFlash2 requires the runtime revision listed below. Existing performance and evaluation tables
+retain their stated MTP configurations and revisions.
 
 ## Requirements
 
 - [NInfer](https://github.com/Neroued/ninfer) revision
-  [`5d2c1f5`](https://github.com/Neroued/ninfer/commit/5d2c1f5590b8f4c3d106a75f65210eb4efb8f4e1)
+  [`385b30ce`](https://github.com/Neroued/ninfer/commit/385b30ce1757bafe5a82680e9b5aeb940b14eec1)
   or later, built from source;
 - 64-bit Linux;
 - NVIDIA GeForce RTX 5090 (`sm_120a`);
@@ -213,6 +220,8 @@ The artifact supports:
 - text generation in thinking and non-thinking modes;
 - image, multi-image, video, and mixed multimodal messages;
 - MTP speculative decoding with draft windows from one to five;
+- DFlash2 with draft windows from one to fifteen using the included
+  DFlash2 companion weights (`--spec dflash2 --draft-tokens 7`, optionally `--lm-head-draft`);
 - BF16, INT8, FP8, NVFP4, and K8V4 KV cache;
 - CUDA Graph decode and compatible-prefix reuse;
 - startup-bounded small-scale concurrent serving with true batched decode;
@@ -317,7 +326,7 @@ AIME results.
 
 ## Limits
 
-- The artifact is accepted only by NInfer revision `5d2c1f5` or later and the matching registered
+- The artifact is accepted only by NInfer revision `385b30ce` or later and the matching registered
   target.
 - NInfer executes on one RTX 5090 and one CUDA device, with a startup-fixed capacity of 1–8 active
   requests per Engine.
@@ -335,11 +344,11 @@ AIME results.
 | Base download source | `modelscope.cn/models/Qwen/Qwen3.8-27B` |
 | Quantized source repository | `unsloth/Qwen3.8-27B-NVFP4` |
 | Quantized source revision | `60e813d4dbbdc5d64cf3f5a8caf2897bedf03679` |
-| Conversion recipe | `qwen3_8_27b_nvfp4-v1` |
+| Conversion recipe | `qwen3_8_27b_nvfp4-v2` |
 | Embedding encoder | `MAXABS_BF16S_RECIP_E4M3FN_RNE_V1` |
 | Converter repository | `https://github.com/Neroued/ninfer` |
-| Converter revision | `651d779657988dcb943896983d415ff6d38a21e2` |
-| Minimum runtime revision | `5d2c1f5590b8f4c3d106a75f65210eb4efb8f4e1` |
+| Converter revision | `863aa8a5f1e866db74f29f8999b83b4021398dee` |
+| Minimum runtime revision | `385b30ce1757bafe5a82680e9b5aeb940b14eec1` |
 | Ranking input SHA-256 | `c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5` |
 
 The artifact identity, summarized object inventory, and conversion provenance are published in

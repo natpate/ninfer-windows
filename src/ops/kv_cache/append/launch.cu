@@ -125,10 +125,10 @@ void launch_paged(const Tensor& k, const Tensor& v, const Tensor& positions, con
     CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_cyclic(const Tensor& k, const Tensor& v, const Tensor& positions, const Tensor& counts,
-                   const Tensor& lanes, CyclicKVCacheLayerView cache,
-                   const KVCacheAppendPrefixPlan& plan, cudaStream_t stream) {
-    validate_plan(k, plan);
+template <int Capacity>
+void launch_cyclic_profile(const Tensor& k, const Tensor& v, const Tensor& positions,
+                           const Tensor& counts, const Tensor& lanes, CyclicKVCacheLayerView cache,
+                           const KVCacheAppendPrefixPlan& plan, cudaStream_t stream) {
     if (plan.max_count == 0) return;
     auto* cache_k       = static_cast<__nv_bfloat16*>(cache.k.data);
     auto* cache_v       = static_cast<__half*>(cache.v.data);
@@ -139,11 +139,36 @@ void launch_cyclic(const Tensor& k, const Tensor& v, const Tensor& positions, co
     const auto* lane    = static_cast<const std::int32_t*>(lanes.data);
     const int padded    = static_cast<int>(cache.padded_capacity);
 
-    const dim3 grid(1 + (plan.max_count - 1) / 4, k.ne[3], 1);
-    kv_cache_append_prefix_cyclic_kernel<<<grid, kBlock, 0, stream>>>(
-        input_k, input_v, pos, count, lane, cache_k, cache_v, plan.min_count, plan.max_count,
-        plan.tokens, padded);
-    CUDA_CHECK(cudaGetLastError());
+    const auto launch = [&]<int Threads>() {
+        constexpr int UnitsPerToken = 128;
+        const dim3 grid((plan.max_count * UnitsPerToken + Threads - 1) / Threads, k.ne[3], 1);
+        kv_cache_append_prefix_cyclic_kernel<Capacity, Threads>
+            <<<grid, Threads, 0, stream>>>(input_k, input_v, pos, count, lane, cache_k, cache_v,
+                                           plan.min_count, plan.max_count, plan.tokens, padded);
+        CUDA_CHECK(cudaGetLastError());
+    };
+    // A half-token per CTA exposes enough independent copies for decode prefixes. At
+    // larger envelopes, one token per CTA reduces scheduling cost without serializing copies.
+    if (plan.max_count * k.ne[3] <= 128)
+        launch.template operator()<64>();
+    else
+        launch.template operator()<128>();
+}
+
+void launch_cyclic(const Tensor& k, const Tensor& v, const Tensor& positions, const Tensor& counts,
+                   const Tensor& lanes, CyclicKVCacheLayerView cache,
+                   const KVCacheAppendPrefixPlan& plan, cudaStream_t stream) {
+    validate_plan(k, plan);
+    switch (cache.capacity) {
+    case 2048:
+        launch_cyclic_profile<2048>(k, v, positions, counts, lanes, cache, plan, stream);
+        return;
+    case 4096:
+        launch_cyclic_profile<4096>(k, v, positions, counts, lanes, cache, plan, stream);
+        return;
+    default:
+        throw std::invalid_argument("kv_cache_append_prefix: unsupported cyclic capacity");
+    }
 }
 
 } // namespace
