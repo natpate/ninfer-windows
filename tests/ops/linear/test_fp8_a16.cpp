@@ -37,7 +37,7 @@ int run_fp8_a16() {
     };
     failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
                           {34816, 5120, 821U, Comparison::Sampled, true, mlp_invocations});
-    constexpr std::array vocabulary_invocations{
+    std::vector<Invocation> vocabulary_invocations{
         Invocation{1, CallForm::A16Convenience, ops::LinearPolicy::A16Only},
         Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{9, CallForm::Policy, ops::LinearPolicy::AllowA4},
@@ -63,6 +63,10 @@ int run_fp8_a16() {
         Invocation{289, CallForm::Policy, ops::LinearPolicy::A16Only},
         Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA4},
     };
+    for (int t = 1; t <= 41; ++t)
+        vocabulary_invocations.push_back({t, CallForm::Policy, ops::LinearPolicy::A16Only});
+    for (int t : {7, 25, 41, 65, 128})
+        vocabulary_invocations.push_back({t, CallForm::Policy, ops::LinearPolicy::A16Only, true});
     failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
                           {248320, 5120, 823U, Comparison::Sampled, true, vocabulary_invocations});
     constexpr std::array vocabulary_policies{

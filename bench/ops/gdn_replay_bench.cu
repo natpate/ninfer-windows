@@ -185,7 +185,7 @@ Options parse_options(int argc, char** argv) {
 std::vector<Profile> selected_profiles(ProfileSelection selection) {
     std::vector<Profile> profiles;
     if (selection == ProfileSelection::Qwen27B || selection == ProfileSelection::All) {
-        profiles.push_back({"27b", 48, 48, 10240, {2, 3, 4, 5, 6}});
+        profiles.push_back({"27b", 48, 48, 10240, {2, 8, 16}});
     }
     if (selection == ProfileSelection::Qwen35B || selection == ProfileSelection::All) {
         profiles.push_back({"35b-a3b", 30, 32, 8192, {2, 6, 16}});
@@ -195,10 +195,6 @@ std::vector<Profile> selected_profiles(ProfileSelection selection) {
 
 std::vector<std::int32_t> selected_widths(const Profile& profile, std::int32_t exact_width) {
     if (exact_width == 0) return profile.widths;
-    if (std::find(profile.widths.begin(), profile.widths.end(), exact_width) ==
-        profile.widths.end()) {
-        throw std::invalid_argument("exact width is not in the selected profile workload");
-    }
     return {exact_width};
 }
 
@@ -257,7 +253,7 @@ std::vector<ops::GdnReplayFoldRow> make_rows(std::int32_t batch, std::int32_t wi
             constexpr std::int32_t kMixed[kRecordCapacity] = {0, 1, 2, 3, 16, 7, 12, 5};
             commit                                         = std::min(width, kMixed[row]);
         }
-        rows[static_cast<std::size_t>(row)] = {kSlots[row], commit};
+        rows[static_cast<std::size_t>(row)] = {kSlots[row], kSlots[row], commit};
     }
     return rows;
 }

@@ -267,6 +267,18 @@ DFlashAttentionRoots dflash_attention(Allocator& allocator, std::int32_t tokens)
     };
 }
 
+// Dynamic-convolution outputs remain live through the corresponding attention/MLP branch.
+struct DFlash2BranchRoots {
+    Tensor prepared;
+    Tensor finish_delta;
+};
+
+template <class Config, class Allocator>
+DFlash2BranchRoots dflash2_branch(Allocator& allocator, std::int32_t width, std::int32_t batch) {
+    return {allocator.alloc(DType::BF16, {Config::hidden, width, batch}),
+            allocator.alloc(DType::BF16, {320, 2, width, batch})};
+}
+
 struct DFlashMlpRoots {
     Tensor hidden;
     Tensor intermediate;

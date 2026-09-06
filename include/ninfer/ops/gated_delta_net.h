@@ -90,7 +90,9 @@ void gated_delta_net_batch_update(const Tensor& q, const Tensor& k, const Tensor
  * transition, key_record BF16 [128,Hq,T,B], value_record BF16 [128,Hv,T,B], and gate_record FP32
  * [2,Hv,T,B] receive bit-preserving copies of raw k, v, and {g,beta}. The invalid record suffix is
  * unchanged, while the invalid out suffix is exact BF16 zero. Inputs, state, records, and out are
- * pairwise non-overlapping.
+ * pairwise non-overlapping. Valid outputs must be bit-identical to the normalized recurrent
+ * execution from the same FP32 initial state and represented inputs; no independent FP64
+ * comparison is needed to establish this record/snapshot equivalence.
  */
 void gated_delta_net_replay_record(const Tensor& q, const Tensor& k, const Tensor& v,
                                    const Tensor& g, const Tensor& beta, float scale,

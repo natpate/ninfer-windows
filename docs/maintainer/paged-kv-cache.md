@@ -492,6 +492,14 @@ ResourceManager 选择 logical target，Program 根据真实 references 决定 M
 在一个 GPU unit launch 前，target schedule 给出每个 pool 本次可能写到的最大 logical position。
 KV Store 从该 active address space 的 reservation materialize 全部必需 pages，并发布 table slice。
 
+`ensure_mapped_to_tokens()` 的参数是本阶段所需覆盖范围的下界。已有 membership 足够时直接返回，
+包括 membership 大于所需范围的情况；只有所需页数超过 entitlement 才失败。该操作不推进 committed
+frontier、不裁剪已有 mappings，也不改变 entitlement。新增页只把当前 address 的 reservation 转成
+allocation；缩短范围只能由显式 truncate 完成。
+
+各阶段只保障自己会写入的 pool：target prefill/verify 负责 Main KV；draft context append 只保障
+DFlash Full backend KV。DFlash2 的 draft context 全部写入固定 cyclic state，不需要 paged KV 物化。
+
 Unit 成功后，Program 才推进 corresponding committed frontiers。部分 layers 已写但 unit 没有形成合法
 commit 时，新 frontier 不可见。
 
@@ -512,6 +520,10 @@ NeededPages_s=
 Trailing mappings 可以解除；最后一个部分页保留。对 active address space，解除的 Device leases 回到
 同一 active reservation，而不是全局 available capacity。Page 内 frontier 之后的 stale bytes 不进入
 consumer valid domain。
+
+投机终止先按最终提交数量完成 recurrent state、hidden 和 draft context 的补齐，等待 GPU 工作完成后
+发布 committed frontier，再裁掉未提交的尾页。不能为满足某个后续阶段更短的覆盖需求而提前裁剪
+verify 的映射。Terminal settlement 最后解除 active reservation，并按 retention 决策保留 checkpoint。
 
 ### 7.4 Deactivation、retain 与 release
 

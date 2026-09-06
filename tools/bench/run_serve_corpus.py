@@ -31,6 +31,7 @@ SPECULATIVE_MODES = {
     "mtp0": ("none", 0),
     "mtp3": ("mtp", 3),
     "dflash7": ("dflash", 7),
+    "dflash2_7": ("dflash2", 7),
 }
 DEFAULT_MODES = ("mtp0", "mtp3")
 SAMPLING_MODES = ("stochastic", "greedy")
@@ -366,7 +367,7 @@ def block_fixture_names(speculative_backend: str) -> tuple[str, ...]:
     scenarios = tuple(name for names in SCENARIO_FIXTURES.values() for name in names)
     if speculative_backend == "none":
         return NIAH_FIXTURES
-    if speculative_backend in {"mtp", "dflash"}:
+    if speculative_backend in {"mtp", "dflash", "dflash2"}:
         return (*LONG_DECODE_FIXTURES, *scenarios)
     raise CampaignError(f"unsupported speculative backend: {speculative_backend}")
 
@@ -383,6 +384,8 @@ def build_specs(
             backend, draft_tokens = SPECULATIVE_MODES[mode_name]
             if backend == "dflash" and target != "qwen3_6_35b_a3b":
                 raise CampaignError("DFlash corpus measurements require the 35B-A3B target")
+            if backend == "dflash2" and target != "qwen3_8_27b":
+                raise CampaignError("DFlash2 corpus measurements require Qwen3.8-27B")
             for fixture_name in block_fixture_names(backend):
                 for seed in SEEDS:
                     specs.append(
@@ -1087,6 +1090,8 @@ def mode_display_name(mode_name: str) -> str:
         return "MTP3"
     if mode_name == "dflash7":
         return "DFlash block=8 (k=7)"
+    if mode_name == "dflash2_7":
+        return "DFlash2 block=8 (k=7)"
     raise CampaignError(f"unsupported summary mode: {mode_name}")
 
 

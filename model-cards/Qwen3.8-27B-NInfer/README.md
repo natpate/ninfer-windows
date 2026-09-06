@@ -110,16 +110,16 @@ only for NInfer; it is not a Transformers checkpoint, Safetensors distribution, 
 | Field | Value |
 |---|---|
 | Filename | `qwen3_8_27b.ninfer` |
-| Size | 18,210,531,328 bytes (16.96 GiB) |
-| SHA-256 | `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e` |
+| Size | 20,437,336,576 bytes (19.03 GiB) |
+| SHA-256 | `0634abb07024221de141456cf04a42ab74b18bc38e1b781c6eb2e062a467eec3` |
 | Container version | 2 |
 | NInfer model ID | `qwen3.8-27b` |
 | NInfer weights ID | `groupwise-int` |
 | NInfer target key | `qwen3_8_27b` |
-| Stored objects | 1,124 (1,118 tensors and 6 resources) |
+| Stored objects | 1,190 (1,184 tensors and 6 resources) |
 
 The Text body uses the registered Q4/Q5/Q6 groupwise allocation, while the token embedding and
-full output head use `W8G32_F16S`. The file also contains the registered Vision, MTP,
+full output head use `W8G32_F16S`. The file also contains the registered Vision, MTP, DFlash2,
 proposal-head, tokenizer, chat-template, generation, and media-processor objects required by
 NInfer.
 
@@ -127,14 +127,21 @@ Verify a downloaded file with:
 
 ```bash
 printf '%s  %s\n' \
-  'eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e' \
+  '0634abb07024221de141456cf04a42ab74b18bc38e1b781c6eb2e062a467eec3' \
   'qwen3_8_27b.ninfer' | sha256sum --check
 ```
+
+This release includes the complete DFlash2 companion weights from
+`z-lab/Qwen3.8-27B-DFlash2` at revision
+`50307d4c4cde6860d4eee73e2547cd786fe8e8a4`. Select
+`--spec dflash2 --draft-tokens 7 --lm-head-draft`; draft counts 1..15 are supported.
+DFlash2 requires the runtime revision listed below. Existing performance and evaluation tables
+retain their stated MTP configurations and revisions.
 
 ## Requirements
 
 - [NInfer](https://github.com/Neroued/ninfer) revision
-  [`5232055`](https://github.com/Neroued/ninfer/commit/52320554b5e71a9da96bff809ddf67ac5773ed63)
+  [`385b30ce`](https://github.com/Neroued/ninfer/commit/385b30ce1757bafe5a82680e9b5aeb940b14eec1)
   or later, built from source;
 - 64-bit Linux;
 - NVIDIA GeForce RTX 5090 (`sm_120a`);
@@ -196,6 +203,8 @@ The artifact supports:
 - text generation in thinking and non-thinking modes;
 - image, multi-image, video, and mixed multimodal messages;
 - MTP speculative decoding with draft windows from one to five;
+- DFlash2 with draft windows from one to fifteen using the included
+  DFlash2 companion weights (`--spec dflash2 --draft-tokens 7`, optionally `--lm-head-draft`);
 - BF16, INT8, FP8, NVFP4, and K8V4 KV cache;
 - CUDA Graph decode and compatible-prefix reuse;
 - startup-bounded small-scale concurrent serving with true batched decode;
@@ -231,7 +240,7 @@ card reports no AIME results.
 
 ## Limits
 
-- The artifact is accepted only by NInfer revision `5232055` or later and the matching registered
+- The artifact is accepted only by NInfer revision `385b30ce` or later and the matching registered
   target.
 - NInfer executes on one RTX 5090 and one CUDA device, with a startup-fixed capacity of 1–8 active
   requests per Engine.
@@ -247,10 +256,10 @@ card reports no AIME results.
 | Source repository | `Qwen/Qwen3.8-27B` |
 | Source revision | `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` |
 | Download source | `modelscope.cn/models/Qwen/Qwen3.8-27B` |
-| Conversion recipe | `qwen3_8_27b-v1` |
+| Conversion recipe | `qwen3_8_27b-v2` |
 | Converter repository | `https://github.com/Neroued/ninfer` |
-| Converter revision | `52320554b5e71a9da96bff809ddf67ac5773ed63` |
-| Minimum runtime revision | `52320554b5e71a9da96bff809ddf67ac5773ed63` |
+| Converter revision | `863aa8a5f1e866db74f29f8999b83b4021398dee` |
+| Minimum runtime revision | `385b30ce1757bafe5a82680e9b5aeb940b14eec1` |
 | Ranking input SHA-256 | `c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5` |
 
 The local source configuration, tensor index, frontend resources, and published CRC32 inventory

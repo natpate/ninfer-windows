@@ -563,12 +563,13 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
     if ((is_rewrite_checkpoint_restore(plan->reuse) ||
          plan->reuse == ReusePath::PrivateLongAnchor ||
          plan->reuse == ReusePath::SharedStablePrefix) &&
-        speculative_backend == SpeculativeBackend::DFlash &&
+        is_masked_draft_backend(speculative_backend) &&
         (!dflash ||
-         (source != nullptr && (!source->kv || !source->kv->backend ||
+         (source != nullptr && (!source->kv || (backend_kv_cache() && !source->kv->backend) ||
                                 source->dflash_context_frontier < plan->reuse_base)) ||
-         (shared_source != nullptr && (!shared_source->kv || !shared_source->kv->backend ||
-                                       shared_source->backend_frontier < plan->reuse_base)))) {
+         (shared_source != nullptr &&
+          (!shared_source->kv || (backend_kv_cache() && !shared_source->kv->backend) ||
+           shared_source->frontier < plan->reuse_base)))) {
         throw std::logic_error("published DFlash checkpoint is not materializable");
     }
 
@@ -832,7 +833,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
             (plan->source_mode == runtime::PrivateSourceMode::Retain && !splits_private_both) ||
             (plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive &&
              plan->state_fork_required);
-        if (speculative_backend == SpeculativeBackend::DFlash && forks_device_state &&
+        if (is_masked_draft_backend(speculative_backend) && forks_device_state &&
             selected_state_residency != StateReplicaResidency::HostOnly) {
             // DFlash has lane-local recurrent state which is copied eagerly when a retained
             // checkpoint forks. The copy completes on the compute stream in the publication

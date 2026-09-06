@@ -30,12 +30,12 @@ using namespace ninfer;
 
 namespace {
 
-constexpr std::int32_t kFullHeadDim   = 256;
-constexpr std::int32_t kPrefixHeadDim = 128;
-constexpr std::int32_t kPrefixKvHeads = 8;
-constexpr std::int32_t kRingCapacity  = 4096;
-constexpr std::size_t kFlushBytes     = std::size_t{256} << 20;
-constexpr double kRtx5090DramGBs      = 1792.0;
+constexpr std::int32_t kFullHeadDim         = 256;
+constexpr std::int32_t kPrefixHeadDim       = 128;
+constexpr std::int32_t kPrefixKvHeads       = 8;
+constexpr std::int32_t kPagedPrefixCapacity = 4096;
+constexpr std::size_t kFlushBytes           = std::size_t{256} << 20;
+constexpr double kRtx5090DramGBs            = 1792.0;
 
 enum class Mode : std::uint8_t { Full, Prefix, All };
 enum class FullGeometryChoice : std::uint8_t { Kv4, Kv2, All };
@@ -62,10 +62,14 @@ struct Options {
     CacheMode cache                  = CacheMode::Cold;
     std::vector<std::int32_t> tokens{1, 2, 4, 8, 16, 1024};
     std::vector<std::int32_t> counts{0, 1, 4, 8, 16};
-    std::int32_t context = 128;
-    int warmup           = 5;
-    int repeat           = 50;
-    bool profile         = false;
+    std::int32_t cyclic_capacity = 4096;
+    std::int32_t batch           = 1;
+    std::int32_t context         = 128;
+    int warmup                   = 5;
+    int repeat                   = 50;
+    int graph_calls              = 1;
+    int max_count                = -1;
+    bool profile                 = false;
     std::string csv_out;
 };
 
@@ -74,10 +78,15 @@ struct Result {
     const char* geometry;
     KvCacheStorage storage;
     const char* layout;
+    std::int32_t batch;
+    std::int32_t cyclic_capacity;
     Execution execution;
     CacheState cache;
     std::int32_t tokens;
     std::int32_t committed;
+    std::int32_t max_count;
+    std::size_t graph_nodes;
+    int graph_calls;
     double logical_cache_bytes;
     double key_vector_bytes;
     double value_vector_bytes;
@@ -93,8 +102,10 @@ struct Result {
                  "[--full-geometry d256-kv4|d256-kv2|all] "
                  "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|all] "
                  "[--layout paged|cyclic|all] [--tokens T,...] [--counts C,...] "
+                 "[--cyclic-capacity 2048|4096] [--batch B] "
                  "[--context L] [--execution eager|graph|both] [--cache cold|warm|both] "
-                 "[--warmup N] [--repeat N] [--profile] [--csv-out PATH]\n",
+                 "[--warmup N] [--repeat N] [--graph-calls N] [--max-count N] [--profile] "
+                 "[--csv-out PATH]\n",
                  message);
     std::exit(2);
 }
@@ -184,10 +195,18 @@ Options parse_options(int argc, char** argv) {
                 usage("--layout expects paged, cyclic, or all");
         } else if (argument == "--tokens") {
             options.tokens =
-                parse_list(next("--tokens requires a value"), 1, kRingCapacity, "--tokens");
+                parse_list(next("--tokens requires a value"), 1, kPagedPrefixCapacity, "--tokens");
         } else if (argument == "--counts") {
             options.counts =
-                parse_list(next("--counts requires a value"), 0, kRingCapacity, "--counts");
+                parse_list(next("--counts requires a value"), 0, kPagedPrefixCapacity, "--counts");
+        } else if (argument == "--cyclic-capacity") {
+            options.cyclic_capacity = parse_i32(next("--cyclic-capacity requires a value"), 2048,
+                                                4096, "--cyclic-capacity");
+            if (options.cyclic_capacity != 2048 && options.cyclic_capacity != 4096) {
+                usage("--cyclic-capacity expects 2048 or 4096");
+            }
+        } else if (argument == "--batch") {
+            options.batch = parse_i32(next("--batch requires a value"), 1, 8, "--batch");
         } else if (argument == "--context") {
             options.context = parse_i32(next("--context requires a value"), 0, 262144, "--context");
         } else if (argument == "--execution") {
@@ -214,6 +233,12 @@ Options parse_options(int argc, char** argv) {
             options.warmup = parse_i32(next("--warmup requires a value"), 0, 10000, "--warmup");
         } else if (argument == "--repeat") {
             options.repeat = parse_i32(next("--repeat requires a value"), 1, 10000, "--repeat");
+        } else if (argument == "--graph-calls") {
+            options.graph_calls =
+                parse_i32(next("--graph-calls requires a value"), 1, 64, "--graph-calls");
+        } else if (argument == "--max-count") {
+            options.max_count =
+                parse_i32(next("--max-count requires a value"), 0, 4096, "--max-count");
         } else if (argument == "--profile") {
             options.profile = true;
         } else if (argument == "--csv-out") {
@@ -241,6 +266,12 @@ Options parse_options(int argc, char** argv) {
         (options.layout == LayoutChoice::All || options.counts.size() != 1)) {
         usage("prefix --profile requires one layout and one count");
     }
+    if (options.batch != 1 &&
+        (options.mode != Mode::Prefix || options.layout != LayoutChoice::Cyclic)) {
+        usage("--batch greater than one requires --mode prefix --layout cyclic");
+    }
+    if (options.graph_calls > 1 && (options.execution != Execution::Graph || options.profile))
+        usage("graph bundles require --execution graph and no --profile");
     return options;
 }
 
@@ -358,70 +389,99 @@ private:
 PagedKVBatchLayerView make_prefix_paged_view(DeviceBuffer& k, DeviceBuffer& v,
                                              DeviceBuffer& block_tables) {
     return {
-        .k_pages = Tensor(
-            k.p, DType::BF16,
-            {kPrefixHeadDim, kPagedKVPageSize, kRingCapacity / kPagedKVPageSize, kPrefixKvHeads}),
-        .v_pages = Tensor(
-            v.p, DType::FP16,
-            {kPrefixHeadDim, kPagedKVPageSize, kRingCapacity / kPagedKVPageSize, kPrefixKvHeads}),
-        .block_tables = Tensor(block_tables.p, DType::I32, {kRingCapacity / kPagedKVPageSize, 1}),
+        .k_pages = Tensor(k.p, DType::BF16,
+                          {kPrefixHeadDim, kPagedKVPageSize,
+                           kPagedPrefixCapacity / kPagedKVPageSize, kPrefixKvHeads}),
+        .v_pages = Tensor(v.p, DType::FP16,
+                          {kPrefixHeadDim, kPagedKVPageSize,
+                           kPagedPrefixCapacity / kPagedKVPageSize, kPrefixKvHeads}),
+        .block_tables =
+            Tensor(block_tables.p, DType::I32, {kPagedPrefixCapacity / kPagedKVPageSize, 1}),
         .head_dim     = kPrefixHeadDim,
         .num_kv_heads = kPrefixKvHeads,
         .storage      = KvCacheStorage::BFloat16,
     };
 }
 
-CyclicKVCacheLayerView make_prefix_cyclic_view(DeviceBuffer& k, DeviceBuffer& v) {
+CyclicKVCacheLayerView make_prefix_cyclic_view(DeviceBuffer& k, DeviceBuffer& v,
+                                               std::int32_t capacity, std::int32_t batch) {
     return {
-        .k        = Tensor(k.p, DType::BF16, {kPrefixHeadDim, kRingCapacity, kPrefixKvHeads, 1}),
-        .v        = Tensor(v.p, DType::FP16, {kPrefixHeadDim, kRingCapacity, kPrefixKvHeads, 1}),
-        .capacity = kRingCapacity,
-        .padded_capacity = kRingCapacity,
+        .k        = Tensor(k.p, DType::BF16, {kPrefixHeadDim, capacity, kPrefixKvHeads, batch}),
+        .v        = Tensor(v.p, DType::FP16, {kPrefixHeadDim, capacity, kPrefixKvHeads, batch}),
+        .capacity = static_cast<std::uint32_t>(capacity),
+        .padded_capacity = static_cast<std::uint32_t>(capacity),
         .num_kv_heads    = kPrefixKvHeads,
         .head_dim        = kPrefixHeadDim,
-        .lane_capacity   = 1,
+        .lane_capacity   = batch,
     };
 }
 
 class PrefixCase {
 public:
-    PrefixCase(std::int32_t tokens, std::int32_t committed, bool cyclic)
+    PrefixCase(std::int32_t tokens, std::int32_t committed, bool cyclic,
+               std::int32_t cyclic_capacity, std::int32_t batch, int maximum)
         : tokens_(tokens), committed_(committed), cyclic_(cyclic),
-          k_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens)),
-          v_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens)),
-          positions_(static_cast<std::size_t>(tokens) * sizeof(std::int32_t)),
-          commit_count_(sizeof(std::int32_t)), selector_(sizeof(std::int32_t)),
-          cache_k_(bench::make_zeros(static_cast<std::size_t>(kPrefixHeadDim) * kRingCapacity *
-                                     kPrefixKvHeads * 2)),
-          cache_v_(bench::make_zeros(static_cast<std::size_t>(kPrefixHeadDim) * kRingCapacity *
-                                     kPrefixKvHeads * 2)),
-          block_table_(static_cast<std::size_t>(kRingCapacity / kPagedKVPageSize) *
-                       sizeof(std::int32_t)),
-          k_tensor_(k_.p, DType::BF16, {kPrefixHeadDim, kPrefixKvHeads, tokens, 1}),
-          v_tensor_(v_.p, DType::BF16, {kPrefixHeadDim, kPrefixKvHeads, tokens, 1}),
-          positions_tensor_(positions_.p, DType::I32, {tokens, 1}),
-          count_tensor_(commit_count_.p, DType::I32, {1}),
-          selector_tensor_(selector_.p, DType::I32, {1}),
-          paged_view_(make_prefix_paged_view(cache_k_, cache_v_, block_table_)),
-          cyclic_view_(make_prefix_cyclic_view(cache_k_, cache_v_)),
-          envelope_{0, static_cast<std::uint32_t>(tokens)} {
-        const std::int32_t start = cyclic ? 2 * kRingCapacity - 3 : 0;
-        std::vector<std::int32_t> host_positions(static_cast<std::size_t>(tokens));
-        for (std::int32_t token = 0; token < tokens; ++token) {
-            host_positions[static_cast<std::size_t>(token)] = start + token;
+          k_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens *
+                              batch)),
+          v_(bench::make_bf16(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * tokens *
+                              batch)),
+          positions_(static_cast<std::size_t>(tokens) * batch * sizeof(std::int32_t)),
+          commit_count_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),
+          selector_(static_cast<std::size_t>(batch) * sizeof(std::int32_t)),
+          cache_k_(bench::make_zeros(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * 2 *
+                                     (cyclic ? static_cast<std::size_t>(cyclic_capacity) * batch
+                                             : static_cast<std::size_t>(kPagedPrefixCapacity)))),
+          cache_v_(bench::make_zeros(static_cast<std::size_t>(kPrefixHeadDim) * kPrefixKvHeads * 2 *
+                                     (cyclic ? static_cast<std::size_t>(cyclic_capacity) * batch
+                                             : static_cast<std::size_t>(kPagedPrefixCapacity)))),
+          block_table_(cyclic ? sizeof(std::int32_t)
+                              : static_cast<std::size_t>(kPagedPrefixCapacity / kPagedKVPageSize) *
+                                    sizeof(std::int32_t)),
+          k_tensor_(k_.p, DType::BF16, {kPrefixHeadDim, kPrefixKvHeads, tokens, batch}),
+          v_tensor_(v_.p, DType::BF16, {kPrefixHeadDim, kPrefixKvHeads, tokens, batch}),
+          positions_tensor_(positions_.p, DType::I32, {tokens, batch}),
+          count_tensor_(commit_count_.p, DType::I32, {batch}),
+          selector_tensor_(selector_.p, DType::I32, {batch}),
+          paged_view_(cyclic ? PagedKVBatchLayerView{}
+                             : make_prefix_paged_view(cache_k_, cache_v_, block_table_)),
+          cyclic_view_(cyclic ? make_prefix_cyclic_view(cache_k_, cache_v_, cyclic_capacity, batch)
+                              : CyclicKVCacheLayerView{}),
+          envelope_{0, static_cast<std::uint32_t>(maximum)} {
+        if (maximum > tokens || committed > maximum)
+            throw std::invalid_argument("prefix count/envelope exceeds extent");
+        if (!cyclic && batch != 1) {
+            throw std::invalid_argument("paged prefix benchmark requires B=1");
+        }
+        if (cyclic && (maximum > cyclic_capacity || committed > cyclic_capacity)) {
+            throw std::invalid_argument("cyclic prefix extent exceeds capacity");
+        }
+        const std::int32_t start = cyclic ? 2 * cyclic_capacity - 3 : 0;
+        std::vector<std::int32_t> host_positions(static_cast<std::size_t>(tokens) * batch);
+        for (std::int32_t b = 0; b < batch; ++b) {
+            for (std::int32_t token = 0; token < tokens; ++token) {
+                host_positions[static_cast<std::size_t>(b * tokens + token)] = start + token;
+            }
         }
         CUDA_CHECK(cudaMemcpy(positions_.p, host_positions.data(), positions_.bytes,
                               cudaMemcpyHostToDevice));
-        std::vector<std::int32_t> host_table(kRingCapacity / kPagedKVPageSize);
-        for (std::int32_t page = 0; page < static_cast<std::int32_t>(host_table.size()); ++page) {
-            host_table[static_cast<std::size_t>(page)] = page;
+        if (!cyclic) {
+            std::vector<std::int32_t> host_table(kPagedPrefixCapacity / kPagedKVPageSize);
+            for (std::int32_t page = 0; page < static_cast<std::int32_t>(host_table.size());
+                 ++page) {
+                host_table[static_cast<std::size_t>(page)] = page;
+            }
+            CUDA_CHECK(cudaMemcpy(block_table_.p, host_table.data(), block_table_.bytes,
+                                  cudaMemcpyHostToDevice));
         }
-        CUDA_CHECK(cudaMemcpy(block_table_.p, host_table.data(), block_table_.bytes,
+        const std::vector<std::int32_t> host_counts(static_cast<std::size_t>(batch), committed);
+        CUDA_CHECK(cudaMemcpy(commit_count_.p, host_counts.data(), commit_count_.bytes,
                               cudaMemcpyHostToDevice));
-        CUDA_CHECK(
-            cudaMemcpy(commit_count_.p, &committed_, sizeof(committed_), cudaMemcpyHostToDevice));
-        const std::int32_t selector = 0;
-        CUDA_CHECK(cudaMemcpy(selector_.p, &selector, sizeof(selector), cudaMemcpyHostToDevice));
+        std::vector<std::int32_t> host_selectors(static_cast<std::size_t>(batch));
+        for (std::int32_t b = 0; b < batch; ++b) {
+            host_selectors[static_cast<std::size_t>(b)] = cyclic ? b : 0;
+        }
+        CUDA_CHECK(cudaMemcpy(selector_.p, host_selectors.data(), selector_.bytes,
+                              cudaMemcpyHostToDevice));
     }
 
     void launch(cudaStream_t stream) {
@@ -505,8 +565,8 @@ double full_useful_bytes(const FullGeometry& geometry, KvCacheStorage storage,
     return input + output;
 }
 
-double prefix_useful_bytes(std::int32_t committed) {
-    return static_cast<double>(committed) * 8192.0;
+double prefix_useful_bytes(std::int32_t committed, std::int32_t batch) {
+    return static_cast<double>(committed) * batch * 8192.0;
 }
 
 template <class Case>
@@ -526,17 +586,19 @@ bench::ColdTiming measure(Case& data, Execution execution, CacheState cache,
 
 void report(const Result& result) {
     const double seconds = result.timing.median_us * 1.0e-6;
-    const double gbps    = result.useful_bytes / seconds / 1.0e9;
-    std::printf("mode=%-6s geometry=%-9s kv=%-6s layout=%-6s execution=%-5s cache=%-4s "
-                "T=%4d C=%4d median=%8.3f us min=%8.3f us p95=%8.3f us "
+    const double gbps    = seconds > 0 ? result.useful_bytes / seconds / 1.0e9 : 0.0;
+    std::printf("mode=%-6s geometry=%-9s kv=%-6s layout=%-6s B=%d ring=%4d "
+                "execution=%-5s cache=%-4s T=%4d C=%4d max_count=%d graph_nodes=%zu graph_calls=%d "
+                "median=%8.3f us min=%8.3f us p95=%8.3f us "
                 "logical=%.0f physical=%.0f (K=%.0f V=%.0f) useful=%8.1f GB/s "
                 "(%5.1f%% of %.0f)\n",
                 mode_name(result.mode), result.geometry, storage_name(result.storage),
-                result.layout, execution_name(result.execution), cache_name(result.cache),
-                result.tokens, result.committed, result.timing.median_us, result.timing.min_us,
-                result.timing.p95_us, result.logical_cache_bytes, result.physical_cache_bytes,
-                result.key_vector_bytes, result.value_vector_bytes, gbps,
-                gbps / kRtx5090DramGBs * 100.0, kRtx5090DramGBs);
+                result.layout, result.batch, result.cyclic_capacity,
+                execution_name(result.execution), cache_name(result.cache), result.tokens,
+                result.committed, result.max_count, result.graph_nodes, result.graph_calls,
+                result.timing.median_us, result.timing.min_us, result.timing.p95_us,
+                result.logical_cache_bytes, result.physical_cache_bytes, result.key_vector_bytes,
+                result.value_vector_bytes, gbps, gbps / kRtx5090DramGBs * 100.0, kRtx5090DramGBs);
 }
 
 void write_csv(const Options& options, const std::vector<Result>& results) {
@@ -545,18 +607,21 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
     if (!path.parent_path().empty()) { std::filesystem::create_directories(path.parent_path()); }
     std::ofstream output(path);
     if (!output) { throw std::runtime_error("failed to open CSV output"); }
-    output << "mode,geometry,kv_dtype,layout,execution,cache,T,committed,logical_cache_bytes,"
-              "key_vector_bytes,value_vector_bytes,physical_cache_bytes,useful_bytes,"
+    output << "mode,geometry,kv_dtype,layout,batch,cyclic_capacity,execution,cache,T,committed,max_"
+              "count,graph_nodes,graph_calls,"
+              "logical_cache_bytes,key_vector_bytes,value_vector_bytes,physical_cache_bytes,"
+              "useful_bytes,"
               "median_us,min_us,p95_us\n";
     for (const Result& result : results) {
         output << mode_name(result.mode) << ',' << result.geometry << ','
-               << storage_name(result.storage) << ',' << result.layout << ','
-               << execution_name(result.execution) << ',' << cache_name(result.cache) << ','
-               << result.tokens << ',' << result.committed << ',' << result.logical_cache_bytes
-               << ',' << result.key_vector_bytes << ',' << result.value_vector_bytes << ','
-               << result.physical_cache_bytes << ',' << result.useful_bytes << ','
-               << result.timing.median_us << ',' << result.timing.min_us << ','
-               << result.timing.p95_us << '\n';
+               << storage_name(result.storage) << ',' << result.layout << ',' << result.batch << ','
+               << result.cyclic_capacity << ',' << execution_name(result.execution) << ','
+               << cache_name(result.cache) << ',' << result.tokens << ',' << result.committed << ','
+               << result.max_count << ',' << result.graph_nodes << ',' << result.graph_calls << ','
+               << result.logical_cache_bytes << ',' << result.key_vector_bytes << ','
+               << result.value_vector_bytes << ',' << result.physical_cache_bytes << ','
+               << result.useful_bytes << ',' << result.timing.median_us << ','
+               << result.timing.min_us << ',' << result.timing.p95_us << '\n';
     }
 }
 
@@ -565,8 +630,9 @@ void profile_case(Case& data, const char* label, const Options& options, DeviceB
                   cudaStream_t stream) {
     const Execution execution = options.execution;
     const CacheState cache = options.cache == CacheMode::Cold ? CacheState::Cold : CacheState::Warm;
+    const bool empty       = options.mode == Mode::Prefix && options.max_count == 0;
     bench::TimedGraph graph;
-    if (execution == Execution::Graph) {
+    if (execution == Execution::Graph && !empty) {
         data.launch(stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
         graph.capture(stream, [&](cudaStream_t launch_stream) { data.launch(launch_stream); });
@@ -583,7 +649,7 @@ void profile_case(Case& data, const char* label, const Options& options, DeviceB
                 execution_name(execution), cache_name(cache));
     std::fflush(stdout);
     CUDA_CHECK(cudaProfilerStart());
-    if (execution == Execution::Graph)
+    if (execution == Execution::Graph && !empty)
         graph.launch(stream);
     else
         data.launch(stream);
@@ -609,15 +675,23 @@ std::vector<KvCacheStorage> selected_storages(KvChoice choice) {
 
 template <class Case>
 void collect_case(Case& data, Mode mode, const char* geometry, KvCacheStorage storage,
-                  const char* layout, std::int32_t tokens, std::int32_t committed,
-                  double logical_cache_bytes, double key_vector_bytes, double value_vector_bytes,
-                  double physical_cache_bytes, double useful_bytes, const Options& options,
-                  DeviceBuffer& flush, cudaStream_t stream, std::vector<Result>& results) {
+                  const char* layout, std::int32_t batch, std::int32_t cyclic_capacity,
+                  std::int32_t tokens, std::int32_t committed, double logical_cache_bytes,
+                  double key_vector_bytes, double value_vector_bytes, double physical_cache_bytes,
+                  double useful_bytes, const Options& options, DeviceBuffer& flush,
+                  cudaStream_t stream, std::vector<Result>& results) {
+    const bool empty = mode == Mode::Prefix && options.max_count == 0;
     bench::TimedGraph graph;
-    if (options.execution != Execution::Eager) {
+    if (empty) {
         data.launch(stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
-        graph.capture(stream, [&](cudaStream_t launch_stream) { data.launch(launch_stream); });
+    }
+    if (options.execution != Execution::Eager && !empty) {
+        data.launch(stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        graph.capture(stream, [&](cudaStream_t launch_stream) {
+            for (int call = 0; call < options.graph_calls; ++call) data.launch(launch_stream);
+        });
     }
     for (const Execution execution : {Execution::Eager, Execution::Graph}) {
         if ((options.execution == Execution::Eager && execution != Execution::Eager) ||
@@ -633,17 +707,28 @@ void collect_case(Case& data, Mode mode, const char* geometry, KvCacheStorage st
                           geometry,
                           storage,
                           layout,
+                          batch,
+                          cyclic_capacity,
                           execution,
                           cache,
                           tokens,
                           committed,
+                          mode == Mode::Prefix
+                              ? (options.max_count < 0 ? tokens : options.max_count)
+                              : tokens,
+                          execution == Execution::Graph && !empty ? graph.nodes() : 0,
+                          options.graph_calls,
                           logical_cache_bytes,
                           key_vector_bytes,
                           value_vector_bytes,
                           physical_cache_bytes,
                           useful_bytes,
-                          measure(data, execution, cache, &graph, flush, stream, options.warmup,
-                                  options.repeat)};
+                          empty ? bench::ColdTiming{}
+                                : measure(data, execution, cache, &graph, flush, stream,
+                                          options.warmup, options.repeat)};
+            result.timing.median_us /= options.graph_calls;
+            result.timing.min_us /= options.graph_calls;
+            result.timing.p95_us /= options.graph_calls;
             report(result);
             results.push_back(result);
         }
@@ -679,9 +764,20 @@ int main(int argc, char** argv) {
                 if (options.counts.front() > options.tokens.front()) {
                     usage("prefix count exceeds T");
                 }
-                PrefixCase data(options.tokens.front(), options.counts.front(), cyclic);
+                if (cyclic &&
+                    ((options.max_count < 0 ? options.tokens.front() : options.max_count) >
+                         options.cyclic_capacity ||
+                     options.counts.front() > options.cyclic_capacity)) {
+                    usage("cyclic prefix extent exceeds capacity");
+                }
+                PrefixCase data(options.tokens.front(), options.counts.front(), cyclic,
+                                options.cyclic_capacity, options.batch,
+                                options.max_count < 0 ? options.tokens.front() : options.max_count);
                 const std::string label =
-                    std::string("mode=prefix layout=") + (cyclic ? "cyclic" : "paged");
+                    std::string("mode=prefix layout=") +
+                    (cyclic ? "cyclic capacity=" + std::to_string(options.cyclic_capacity) +
+                                  " B=" + std::to_string(options.batch)
+                            : "paged");
                 profile_case(data, label.c_str(), options, flush, stream);
             }
             CUDA_CHECK(cudaStreamDestroy(stream));
@@ -699,8 +795,8 @@ int main(int argc, char** argv) {
                         const double physical_cache_bytes =
                             full_physical_cache_bytes(geometry, storage, tokens);
                         FullCase data(geometry, storage, tokens, options.context);
-                        collect_case(data, Mode::Full, geometry.name, storage, "paged", tokens,
-                                     tokens, full_logical_cache_bytes(geometry, tokens),
+                        collect_case(data, Mode::Full, geometry.name, storage, "paged", 1, 0,
+                                     tokens, tokens, full_logical_cache_bytes(geometry, tokens),
                                      key_vector_bytes, value_vector_bytes, physical_cache_bytes,
                                      full_useful_bytes(geometry, storage, tokens), options, flush,
                                      stream, results);
@@ -716,16 +812,27 @@ int main(int argc, char** argv) {
                 }
                 for (const std::int32_t tokens : options.tokens) {
                     for (const std::int32_t committed : options.counts) {
-                        if (committed > tokens) { continue; }
-                        PrefixCase data(tokens, committed, cyclic);
+                        if (committed > tokens ||
+                            (options.max_count >= 0 && committed > options.max_count)) {
+                            continue;
+                        }
+                        if (cyclic && ((options.max_count < 0 ? tokens : options.max_count) >
+                                           options.cyclic_capacity ||
+                                       committed > options.cyclic_capacity)) {
+                            continue;
+                        }
+                        PrefixCase data(tokens, committed, cyclic, options.cyclic_capacity,
+                                        options.batch,
+                                        options.max_count < 0 ? tokens : options.max_count);
                         constexpr double kPrefixVectorBytes = kPrefixHeadDim * 2.0;
-                        const double cache_bytes = static_cast<double>(committed) * kPrefixKvHeads *
-                                                   (2.0 * kPrefixVectorBytes);
+                        const double cache_bytes = static_cast<double>(committed) * options.batch *
+                                                   kPrefixKvHeads * (2.0 * kPrefixVectorBytes);
                         collect_case(data, Mode::Prefix, "d128-kv8", KvCacheStorage::BFloat16,
-                                     cyclic ? "cyclic" : "paged", tokens, committed, cache_bytes,
-                                     kPrefixVectorBytes, kPrefixVectorBytes, cache_bytes,
-                                     prefix_useful_bytes(committed), options, flush, stream,
-                                     results);
+                                     cyclic ? "cyclic" : "paged", options.batch,
+                                     cyclic ? options.cyclic_capacity : 0, tokens, committed,
+                                     cache_bytes, kPrefixVectorBytes, kPrefixVectorBytes,
+                                     cache_bytes, prefix_useful_bytes(committed, options.batch),
+                                     options, flush, stream, results);
                     }
                 }
             }

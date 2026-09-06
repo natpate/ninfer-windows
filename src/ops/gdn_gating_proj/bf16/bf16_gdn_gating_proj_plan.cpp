@@ -304,6 +304,8 @@ const char* bf16_gdn_gating_schedule_name(Bf16GdnGatingScheduleId schedule) noex
 
 const char* bf16_gdn_norm_gating_schedule_name(Bf16GdnNormGatingScheduleId schedule) noexcept {
     switch (schedule) {
+    case Bf16GdnNormGatingScheduleId::FusedSimt27:
+        return "gdn_norm_gating_proj.bf16.fused_simt_27";
     case Bf16GdnNormGatingScheduleId::Composed:
         return "gdn_norm_gating_proj.bf16.composed";
     case Bf16GdnNormGatingScheduleId::MmaCooperativeSplit32:
@@ -370,6 +372,8 @@ Bf16GdnNormGatingPlan bf16_gdn_norm_gating_resolve_plan(const Bf16GdnGatingProbl
     Bf16GdnGatingPlan control            = bf16_gdn_gating_resolve_plan(problem);
     Bf16GdnNormGatingScheduleId schedule = Bf16GdnNormGatingScheduleId::Composed;
     std::int32_t norm_splits             = 0;
+    if (is_27(problem) && problem.cols <= 42)
+        return {Bf16GdnNormGatingScheduleId::FusedSimt27, control, 0};
     if (is_35(problem) && problem.cols <= 16) {
         control  = bf16_gdn_gating_resolve_candidate(Bf16GdnGatingScheduleId::MmaCooperativeSplit32,
                                                      problem);
@@ -387,6 +391,11 @@ std::size_t bf16_gdn_norm_gating_capacity_workspace_bytes(std::int32_t heads,
                                                           std::int32_t max_cols) {
     std::size_t maximum =
         bf16_gdn_gating_capacity_workspace_bytes(heads, input_rows, min_cols, max_cols);
+    if (heads == 48 && input_rows == 5120) {
+        if (max_cols <= 42) return 0;
+        return bf16_gdn_gating_capacity_workspace_bytes(heads, input_rows, std::max(min_cols, 43),
+                                                        max_cols);
+    }
     if (heads == 32 && input_rows == 2048 && min_cols <= 16) {
         const std::int32_t fused_cols = std::min<std::int32_t>(max_cols, 16);
         maximum                       = std::max(
@@ -433,6 +442,11 @@ void bf16_gdn_norm_gating_dispatch(const Tensor& x, const Tensor& norm_weight, f
                                    Tensor& g, Tensor& beta, DeviceExecutionView execution) {
     const Bf16GdnGatingProblem problem{g.ne[0], x.ne[0], x.ne[1]};
     const Bf16GdnNormGatingPlan plan = bf16_gdn_norm_gating_resolve_plan(problem);
+    if (plan.schedule == Bf16GdnNormGatingScheduleId::FusedSimt27) {
+        bf16_gdn_norm_gating_proj_27_launch(x, norm_weight, eps, h, a_weight, b_weight, A_log,
+                                            dt_bias, g, beta, execution.stream);
+        return;
+    }
     if (plan.schedule == Bf16GdnNormGatingScheduleId::Composed) {
         rmsnorm(x, norm_weight, eps, true, h, execution.stream);
         execute_resolved(plan.control, problem, h, a_weight, b_weight, A_log, dt_bias, ws, g, beta,

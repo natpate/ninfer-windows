@@ -27,8 +27,12 @@ Generation purpose 的 NInfer Engine 固定运行：
 - 不抢占已经激活的请求；
 - 每个 decode round 将全部 decode-ready 请求组成一个紧凑批次。
 
-Text、Vision、prefix reuse、MTP、DFlash、CLI 和 HTTP serving 都通过公共 `ninfer::Engine` 路径。
-MTP 和 DFlash 是 Program 内部的执行后端，不产生第二套请求调度或结果发布机制。
+Text、Vision、prefix reuse、MTP、DFlash/DFlash2、CLI 和 HTTP serving 都通过公共 `ninfer::Engine` 路径。
+MTP、DFlash 和 DFlash2 是 Program 内部的执行后端，不产生第二套请求调度或结果发布机制。
+Qwen3.8-27B 的 DFlash2 支持启动固定 K=1..15、full/optimized proposal head、Text/Vision 和
+exact-batch CUDA Graph。它复用 family-owned masked-draft 状态事务，五层 local context
+属于 StateImage，不分配 full backend KV；独立 context frontier 与 main frontier 的关系、
+条件 proposal q 和最终提交规则见 [DFlash2](qwen3.8-27b-dflash2.md)。
 
 同一个公共 Engine 还提供启动时固定的 CausalScoring purpose。它只服务离线文本评分：
 `CausalScoreCore` 串行调用 Program，窗口使用临时的空 State 与 Main KV，不创建请求、continuation、
@@ -177,6 +181,27 @@ Engine 构造时读取 `.ninfer` identity，并从 closed registry 选择 exact 
 同一组 Frontend、request-plan、Program 和 execution-result 语义；target identity、artifact binding、模型
 view 与 execution leaves 保持 package-private。Qwen3.6 family 的共享 schedule 通过 compile-time Variant
 实例化，worker hot path 不执行 runtime family selection。
+
+27B 与 35B-A3B package 是同一 identity-free Qwen3.6 family 的平级 Variant，任何一方都不以另一方
+的差异补丁定义。共享算法与实例存储的归属不同：
+
+- `src/targets/qwen3_6` 拥有 `SequencePlan<Variant>`、`RequestPlan<Variant>` 和
+  `Program<Variant>` 算法，以及 Text/Vision/speculative schedule、state transaction、workspace
+  composition 和 CUDA Graph capture/replay 机制。Family 同时拥有 tokenizer/template、输出语义、
+  media preprocessing、MRoPE prompt construction、owning prepared-prompt/output-session 类型、
+  semantic weight-view schemas 和 passive Vision definitions。
+- 每个 `src/targets/<package>` 拥有注册 identity、storage profile、binder、`LoadedModel`、配置、
+  dimensions/storage facts、填充后的 immutable family model view、private leaf payload、diagnostics、
+  graph frontier values 和 Program instance bytes。Package alias 并实例化 family runtime 类型，不复制
+  Program、schedule、workspace composition、state transaction 或 graph-capture 算法。
+- Package 提供三类 execution leaves：attention projection、GDN projection/control、post-mixer。
+  Leaf 调用的闭合数学或状态变换仍由 `src/ops` 实现。
+
+Family 不拥有 target identity、registry entry、artifact binder、target leaf implementation 或 live
+Program instance storage；family schedule 内没有 runtime family selection 或 target-dependent branch。
+每个 Program 独占可变状态和
+device allocation。Prepared prompt 不携带 exact-target tag；各 artifact 的共同 frontend resources
+及具体清单由相应 artifact reference 定义。
 
 权重、State/KV backing、block-table matrices、workspace 与 CUDA Graph resources 在 Engine 开始接受请求前
 建立。运行期改变 ownership、mapping、frontier 与 replica placement，但不重建这些大块 Device allocations。
@@ -496,12 +521,29 @@ checkpoint catalog。
 | Scheduler | `src/runtime/engine/scheduler.h`, `admission_policy.*` |
 | ResourceManager 与 materialization planner | `src/runtime/engine/resource_manager.h`, `materialization_planner.h` |
 | package-neutral runtime contracts | `src/runtime/contract/types.h` |
-| target Program | `src/targets/qwen3_6/impl/runtime/` |
-| physical primitives | `src/core/` |
+| family Program algorithms | `src/targets/qwen3_6/impl/runtime/` |
+| family frontend semantics, owning prompt/output types, semantic model views | `src/targets/qwen3_6/` |
+| registered identities, binding, model views, execution leaves, Program instance storage | `src/targets/<package>/` |
+| device primitives, tensors/views, checked layouts, arenas, graph RAII, physical KV, raw transfers | `src/core/` |
+| generic `.ninfer` framing, descriptors, binding primitives, materialization | `src/artifact/` |
 | semantic Ops | `src/ops/`, `include/ninfer/ops/` |
+| shared JSON/message-to-owning-input adapter | `src/product/prompt_input/` |
+| media URL/path/data acquisition | `src/product/media_acquire/`, CLI and serving |
+| media decode from already-owned bytes | `src/media/decode/` |
 | HTTP Gateway | `src/serve/` |
+| target-private inventories, source recipes, conversion, payload verification | `tools/convert/<target>/` |
 
 这些路径用于定位当前 authority，不把文件拆分固化为外部接口。
+
+`include/ninfer/engine.h` 与 `include/ninfer/types.h` 是 in-tree application 使用的 opaque Engine
+interface 和 owning host values；NInfer 当前不安装或导出 C++ SDK。`include/ninfer/ops/` 是
+repository-internal semantic Op contracts。`.ninfer` 是唯一 C++ 产品 artifact，不通过扩展名检测、
+兼容 shim 或第二套产品入口加载其他格式。CLI、server 和 inference benchmark 只通过公共 Engine
+推理；converter 不提供 Python model-inference route。
+
+Artifact 不解释 checkpoint execution semantics；runtime 不拥有模型数学或 target state；media
+acquisition 不链接到 target。每个语义闭合的 Op（包括 fused、fixed-shape 和 device-specialized
+实现）都归 `src/ops`，不按最初调用者或是否已跨 target 复用决定归属。
 
 相邻文档：
 

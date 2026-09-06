@@ -34,6 +34,30 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
     // consults the grid, and the un-prefetched instantiation is compiled only where it is reached.
     constexpr bool kGateOnGrid = Epilogue == RmsEpilogue::Gated;
 
+    if constexpr (Epilogue != RmsEpilogue::Gated) {
+        if (aligned2 && d == 5120) {
+            // Fixed width removes the dynamic pair-count predicates. Ten pairs per thread
+            // with hoisted gains wins the hidden-row sweep through prefill.
+            rmsnorm_cta_bf16x2_kernel<Epilogue, 256, 10, true, 5120>
+                <<<static_cast<unsigned>(rows), 256, 0, stream>>>(
+                    reinterpret_cast<const __nv_bfloat162*>(x_bf16),
+                    reinterpret_cast<const __nv_bfloat162*>(w_bf16), nullptr,
+                    reinterpret_cast<__nv_bfloat162*>(out_bf16), d, rows, eps);
+            return;
+        }
+    }
+    if constexpr (Epilogue == RmsEpilogue::Offset) {
+        if (aligned2 && d == 256) {
+            // One warp per row, four rows per CTA across both query and key projections.
+            constexpr int block = 128;
+            rmsnorm_warp_bf16x2_kernel<Epilogue, block, true, 256>
+                <<<static_cast<unsigned>((rows + 3) / 4), block, 0, stream>>>(
+                    reinterpret_cast<const __nv_bfloat162*>(x_bf16),
+                    reinterpret_cast<const __nv_bfloat162*>(w_bf16), nullptr,
+                    reinterpret_cast<__nv_bfloat162*>(out_bf16), d, rows, eps);
+            return;
+        }
+    }
     if (aligned2 && d == 128 && Epilogue == RmsEpilogue::Plain) {
         // Plain per-head D128 is latency-bound for Q32/KV8 rows. Four rows per CTA follows the
         // measured lower envelope from T=1 through the 1024-token prefill point.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from tools.bench import run_serve_concurrency as campaign
+from tools.bench import run_serve_corpus as corpus
 from tools.bench.run_serve_corpus import (
     CampaignError,
     Fixture,
@@ -126,3 +129,52 @@ def test_summary_retains_one_canonical_weights_id() -> None:
             "greedy",
             [*records, {"weights_id": "groupwise-int", "metrics": {}}],
         )
+
+
+def test_dflash2_c1_keeps_the_published_corpus_and_order() -> None:
+    point = campaign.Point(
+        target="qwen3_8_27b",
+        model_id="qwen3.8-27b",
+        artifact=Path("model.ninfer"),
+        speculative_mode="dflash2_7",
+        speculative_backend="dflash2",
+        draft_tokens=7,
+        sampling_mode="stochastic",
+        suite="corpus-makespan",
+        concurrency=1,
+    )
+    fixtures = corpus.load_fixtures()
+    jobs = campaign.build_jobs(point, fixtures, 8192)
+    reference = campaign.build_jobs(
+        replace(point, speculative_mode="mtp3", speculative_backend="mtp", draft_tokens=3),
+        fixtures,
+        8192,
+    )
+    assert len(jobs) == 75
+    assert [(j.fixture.name, j.seed, j.max_tokens) for j in jobs] == [
+        (j.fixture.name, j.seed, j.max_tokens) for j in reference
+    ]
+    assert all(j.max_tokens == (65536 if j.fixture.thinking else 4096) for j in jobs)
+    args = campaign.parse_args(
+        [
+            "--artifact", "qwen3_8_27b=model.ninfer",
+            "--mode", "dflash2_7",
+            "--suite", "corpus-makespan",
+            "--concurrency", "1",
+            "--max-context", "131072",
+            "--kv-capacity", "auto",
+            "--output", "results",
+        ]
+    )
+    command = campaign.server_command(Path("ninfer-serve"), point, Path("server.jsonl"), args)
+    for flag, value in [
+        ("--spec", "dflash2"),
+        ("--draft-tokens", "7"),
+        ("--max-concurrency", "1"),
+        ("--max-context", "131072"),
+        ("--kv-dtype", "int8"),
+        ("--temperature", "0.6"),
+        ("--presence-penalty", "1.0"),
+    ]:
+        assert command[command.index(flag) + 1] == value
+    assert "--lm-head-draft" in command and "--no-prefix-reuse" in command

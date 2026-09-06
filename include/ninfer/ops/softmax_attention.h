@@ -41,26 +41,19 @@ struct ContextAttentionExecutionEnvelope {
  * Op output is promoted to FP64 for comparison; storage rounding belongs to the Op criterion and
  * is not reproduced by the oracle.
  *
- * Quantized cache rows use the exact represented values defined by kv_cache_append. Quantized K
- * is consumed through its matching Q/K profile. NVFP4 and K8V4 store R*V for the normalized
- * Hadamard R=H256/16 and apply R^T after the complete attention reduction. Their represented-value
- * conformance oracle independently evaluates RQ, RK, and RV in FP32. K8V4 applies the exact FP8
- * Q/K codecs; NVFP4 rounds RQ once to FP16 and exactly expands the persistent NVFP4 K/V
- * representation to FP16. The oracle then evaluates QK, stable Softmax, PV, and R^T in FP64 and
- * compares the final BF16 production output. Its delta from the unquantized BF16/FP64 oracle above
- * is separate quantization-quality evidence.
+ * Quantized cache rows use the exact persistent representation defined by kv_cache_append.
+ * INT8 and FP8 K rows represent R*K; NVFP4 and K8V4 additionally store R*V, where R=H256/16
+ * is the fixed orthonormal Hadamard transform. The oracle evaluates R*q from the public BF16 q
+ * in FP64, uses exact decoded persistent K/V values, and applies R^T to the complete value
+ * reduction when V is rotated. This is the same logical formula in the cache's stored basis.
+ * It does not quantize or round q, probabilities, partial sums or decoded vectors to copy a
+ * kernel's private arithmetic. Newly appended rows cross their specified persistent codec
+ * boundary before attention observes them.
  *
- * The qualified BFloat16 compute profile keeps Q/K and persistent K at BF16 and uses native BF16
- * QK plus FP16 P/V MMA. INT8-G64 uses native signed-INT8 Q/K MMA; its prompt route uses FP16 P/V
- * MMA and its small-T route uses BF16 P/V MMA. FP8 and K8V4 use native E4M3FN QK MMA, while NVFP4
- * uses FP16 Q and exactly expanded FP16 K with native FP16 QK MMA in both prompt and small-T
- * routes. NVFP4 never quantizes Q to FP4 or FP8. INT8 QK accumulates each group in INT32 and
- * combines represented group products in FP32; the other QK profiles accumulate in FP32. Every
- * profile retains FP32 accumulation for PV, split state, merge, normalization, and applicable
- * Hadamard reductions. P is never quantized to FP8/FP4, and only the final public output is stored
- * as BF16. These arithmetic paths are implementation profiles rather than extra public tensor
- * boundaries. Every cache route has one named numerical criterion and is checked directly against
- * its independent oracle; route-to-route parity is only supplementary evidence.
+ * Kernels may select native BF16/FP16/INT8/FP8 operands, internal reductions, staging precision
+ * and decomposition. These are qualified implementation profiles, not extra public tensor
+ * boundaries. Every cache route is checked directly against the independent mathematical oracle
+ * with its named numerical criterion; route-to-route parity is supplementary evidence only.
  * Those criteria apply to the registered geometries, tested extents, conformance matrix, and
  * target-representative activation range; they are not universal error bounds for arbitrary
  * adversarial BF16 tensors.
@@ -135,7 +128,8 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
  *
  * The caller guarantees that the maximum p+1 over live rows lies within envelope. The envelope is
  * a host launch/workspace resource promise over that batch maximum, not a mask and not persistent
- * state. Inputs, output, every cache plane/table, and live workspace suballocations are pairwise
+ * state. A masked physical width may exceed max_visible_keys when its live prefix is shorter.
+ * Inputs, output, every cache plane/table, and live workspace suballocations are pairwise
  * non-overlapping. The Op overwrites every addressed cache row but owns no cache allocation,
  * frontier, request identity, or commit authority.
  */

@@ -9,6 +9,7 @@
 #include <math_constants.h>
 
 #include <cstdint>
+#include <type_traits>
 
 namespace ninfer::ops {
 
@@ -119,14 +120,16 @@ context_query_stage_v_tile(__half* dst, const __half* context, const __nv_bfloat
     }
 }
 
-template <typename ContextPolicy, int Tokens, int WarpsPerCta, int KeyBlock, bool DirectOutput>
+template <typename ContextPolicy, int Tokens, int WarpsPerCta, int KeyBlock, bool DirectOutput,
+          typename Partial>
 __device__ __forceinline__ void context_query_split_partial_body(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ query_k,
     const __nv_bfloat16* __restrict__ query_v, const std::int32_t* __restrict__ valid_columns,
     const __nv_bfloat16* __restrict__ context_k, const __half* __restrict__ context_v,
     ContextPolicy policy, int length, int max_context, int split_capacity, float scale,
-    __nv_bfloat16* __restrict__ partial_acc, float* __restrict__ partial_m,
-    float* __restrict__ partial_l, __nv_bfloat16* __restrict__ out) {
+    Partial* __restrict__ partial_acc, float* __restrict__ partial_m, float* __restrict__ partial_l,
+    __nv_bfloat16* __restrict__ out) {
+    static_assert(std::is_same_v<Partial, float> || std::is_same_v<Partial, __nv_bfloat16>);
     static_assert(Tokens >= 1 && Tokens <= 16);
     static_assert(WarpsPerCta == (Tokens + 3) / 4);
     static_assert(KeyBlock == 32 || KeyBlock == 64);
@@ -163,9 +166,11 @@ __device__ __forceinline__ void context_query_split_partial_body(
     query_k += QueryKvElements * batch;
     query_v += QueryKvElements * batch;
     out += QueryElements * batch;
-    partial_acc += PartialElements * split_capacity * batch;
-    partial_m += StatElements * split_capacity * batch;
-    partial_l += StatElements * split_capacity * batch;
+    if constexpr (!DirectOutput) {
+        partial_acc += PartialElements * split_capacity * batch;
+        partial_m += StatElements * split_capacity * batch;
+        partial_l += StatElements * split_capacity * batch;
+    }
     const int valid = valid_columns[batch];
     if (kv_head >= kContextQueryKVHeads || split >= split_capacity || length < 0 ||
         length > max_context || valid < 0 || valid > Tokens) {
@@ -479,7 +484,10 @@ __device__ __forceinline__ void context_query_split_partial_body(
                 store_vec(&out[dst], pack_bf16x2(acc[n][0] * inv_l, acc[n][1] * inv_l));
             } else {
                 const auto dst = context_query_partial_index<Tokens>(q_head, d0, token, split);
-                store_vec(&partial_acc[dst], pack_bf16x2(acc[n][0], acc[n][1]));
+                if constexpr (std::is_same_v<Partial, float>)
+                    store_vec(&partial_acc[dst], make_float2(acc[n][0], acc[n][1]));
+                else
+                    store_vec(&partial_acc[dst], pack_bf16x2(acc[n][0], acc[n][1]));
             }
         }
         if (row1 < RowCount) {
@@ -491,7 +499,10 @@ __device__ __forceinline__ void context_query_split_partial_body(
                 store_vec(&out[dst], pack_bf16x2(acc[n][2] * inv_l, acc[n][3] * inv_l));
             } else {
                 const auto dst = context_query_partial_index<Tokens>(q_head, d0, token, split);
-                store_vec(&partial_acc[dst], pack_bf16x2(acc[n][2], acc[n][3]));
+                if constexpr (std::is_same_v<Partial, float>)
+                    store_vec(&partial_acc[dst], make_float2(acc[n][2], acc[n][3]));
+                else
+                    store_vec(&partial_acc[dst], pack_bf16x2(acc[n][2], acc[n][3]));
             }
         }
     }

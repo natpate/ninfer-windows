@@ -3,6 +3,7 @@
 #include "product/logging/pretty_format.h"
 #include "product/logging/startup_log.h"
 #include "product/prompt_input/prompt_input.h"
+#include "product/speculative_options.h"
 
 #include "ninfer/engine.h"
 
@@ -198,8 +199,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
 
     const ninfer::SpeculativeStats& speculative = result.speculative;
     if (speculative.enabled) {
-        const std::string backend =
-            speculative.backend == ninfer::SpeculativeBackend::DFlash ? "dflash" : "mtp";
+        const std::string backend = ninfer::product::speculative_backend_name(speculative.backend);
         print_metric(backend + " draft window", std::to_string(speculative.draft_window));
         print_metric(backend + " rounds", std::to_string(speculative.rounds));
         print_metric(backend + " fallback steps", std::to_string(speculative.fallback_steps));

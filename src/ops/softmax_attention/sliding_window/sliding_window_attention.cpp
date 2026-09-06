@@ -16,16 +16,17 @@ namespace {
 constexpr std::int32_t kHeadDim = 128;
 constexpr std::int32_t kQHeads  = 32;
 constexpr std::int32_t kKVHeads = 8;
-constexpr std::int32_t kWindow  = 4096;
 constexpr float kExpectedScale  = 0.08838834764831844055f;
+
+bool registered_window(std::uint32_t window) { return window == 2048 || window == 4096; }
 
 void require_profile(AttentionHeadGeometry geometry, std::uint32_t window, const char* op) {
     if (!valid_attention_head_geometry(geometry) || geometry.head_dim != kHeadDim ||
         geometry.query_heads != kQHeads || geometry.kv_heads != kKVHeads) {
         throw std::invalid_argument(std::string(op) + ": unsupported head geometry");
     }
-    if (window != static_cast<std::uint32_t>(kWindow)) {
-        throw std::invalid_argument(std::string(op) + ": supported window is 4096");
+    if (!registered_window(window)) {
+        throw std::invalid_argument(std::string(op) + ": supported windows are 2048 and 4096");
     }
 }
 
@@ -45,9 +46,9 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
     }
 }
 
-void validate_context(const CyclicKVCacheLayerView& context, const char* op) {
+void validate_context(const CyclicKVCacheLayerView& context, std::uint32_t window, const char* op) {
     if (context.num_kv_heads != kKVHeads || context.head_dim != kHeadDim ||
-        context.capacity != kWindow || context.padded_capacity < context.capacity ||
+        context.capacity != window || context.padded_capacity < context.capacity ||
         context.lane_capacity <= 0) {
         throw std::invalid_argument(std::string(op) + ": invalid cyclic context");
     }
@@ -57,7 +58,7 @@ void validate_context(const CyclicKVCacheLayerView& context, const char* op) {
     }
     const auto padded = static_cast<std::int32_t>(context.padded_capacity);
     if (context.k.dtype != DType::BF16 || context.v.dtype != DType::FP16) {
-        throw std::invalid_argument(std::string(op) + ": context K/V must be BF16");
+        throw std::invalid_argument(std::string(op) + ": context K/V must be BF16/FP16");
     }
     require_shape(context.k, kHeadDim, padded, kKVHeads, context.lane_capacity, op, "context k");
     require_shape(context.v, kHeadDim, padded, kKVHeads, context.lane_capacity, op, "context v");
@@ -75,7 +76,7 @@ template <class Allocator>
 PartialWorkspace allocate_workspace(Allocator& workspace, std::int32_t tokens, std::int32_t splits,
                                     std::int32_t batch_size) {
     return {
-        workspace.alloc(DType::BF16, {kHeadDim, kQHeads, tokens, splits * batch_size}),
+        workspace.alloc(DType::FP32, {kHeadDim, kQHeads, tokens, splits * batch_size}),
         workspace.alloc(DType::FP32, {kQHeads, tokens, splits * batch_size}),
         workspace.alloc(DType::FP32, {kQHeads, tokens, splits * batch_size}),
     };
@@ -95,10 +96,18 @@ std::size_t sliding_window_attention_workspace_capacity_bytes(
         throw std::invalid_argument(
             "sliding_window_attention workspace: invalid envelope or token interval");
     }
-    const auto plan = detail::sliding_window_attention_resolve_plan(max_tokens, envelope);
-    WorkspaceLayoutBuilder layout;
-    (void)allocate_workspace(layout, max_tokens, plan.split_capacity, batch_size);
-    return layout.peak_bytes(1);
+    // Split capacity depends on the query width. The largest width need not have the
+    // largest allocation (for example, a wider block can use fewer splits).
+    std::size_t capacity = 0;
+    for (int tokens = min_tokens; tokens <= max_tokens; ++tokens) {
+        const auto plan =
+            detail::sliding_window_attention_resolve_plan(window, tokens, batch_size, envelope);
+        if (plan.route == detail::SlidingWindowAttentionRoute::Direct) continue;
+        WorkspaceLayoutBuilder layout;
+        (void)allocate_workspace(layout, tokens, plan.split_capacity, batch_size);
+        capacity = std::max(capacity, layout.peak_bytes(1));
+    }
+    return capacity;
 }
 
 void sliding_window_attention(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
@@ -141,7 +150,7 @@ void sliding_window_attention(const Tensor& q, const Tensor& query_k, const Tens
     require_contiguous_nonnull(valid_columns, op, "valid columns");
     require_contiguous_nonnull(lanes, op, "lanes");
     require_contiguous_nonnull(out, op, "out");
-    validate_context(context, op);
+    validate_context(context, window, op);
     if (envelope.min_context > envelope.max_context ||
         envelope.max_context >
             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -151,9 +160,13 @@ void sliding_window_attention(const Tensor& q, const Tensor& query_k, const Tens
         throw std::invalid_argument("sliding_window_attention: scale must be 1/sqrt(128)");
     }
 
-    auto scope               = workspace.scope();
-    const auto plan          = detail::sliding_window_attention_resolve_plan(tokens, envelope);
-    PartialWorkspace partial = allocate_workspace(workspace, tokens, plan.split_capacity, batch);
+    auto scope = workspace.scope();
+    const auto plan =
+        detail::sliding_window_attention_resolve_plan(window, tokens, batch, envelope);
+    PartialWorkspace partial{};
+    if (plan.route == detail::SlidingWindowAttentionRoute::SplitKv) {
+        partial = allocate_workspace(workspace, tokens, plan.split_capacity, batch);
+    }
     detail::sliding_window_attention_launch(q, query_k, query_v, positions, valid_columns, lanes,
                                             scale, context, plan, partial.acc, partial.m, partial.l,
                                             out, stream);

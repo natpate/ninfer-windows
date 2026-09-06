@@ -5,6 +5,7 @@
 // implementation details and never enter this benchmark's dispatch or output schema.
 
 #include "ninfer/ops/softmax_attention.h"
+#include "ninfer/ops/kv_cache_append.h"
 
 #include "core/device.h"
 #include "core/paged_kv_cache.h"
@@ -13,6 +14,7 @@
 
 #include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -31,12 +33,10 @@ using namespace ninfer;
 
 namespace {
 
-constexpr std::int32_t kHeadDim          = 256;
-constexpr float kScale                   = 0.0625F;
-constexpr std::size_t kFlushBytes        = std::size_t{256} << 20;
-constexpr double kDenseF16Bf16TcTflops   = 209.5;
-constexpr double kDenseFp8TcTflops       = 419.0;
-constexpr double kColdPureReadCeilingGBs = 1674.5;
+constexpr std::int32_t kHeadDim   = 256;
+constexpr float kScale            = 0.0625F;
+constexpr std::size_t kFlushBytes = std::size_t{256} << 20;
+
 
 enum class Entry : std::uint8_t { Append, Cached, Both };
 enum class GeometryChoice : std::uint8_t { H24Kv4, H16Kv2, All };
@@ -68,9 +68,10 @@ struct Options {
     std::vector<std::int32_t> row_contexts;
     std::vector<std::int32_t> valid_columns;
     std::vector<std::int32_t> table_rows;
-    int warmup   = 5;
-    int repeat   = 30;
-    bool profile = false;
+    int graph_calls = 1;
+    int warmup      = 5;
+    int repeat      = 30;
+    bool profile    = false;
     std::string csv_out;
 };
 
@@ -95,8 +96,10 @@ struct Result {
     double physical_cache_bytes;
     double qk_flops;
     double pv_flops;
-    double physical_kv_read_bytes;
+    double unique_kv_bytes;
     bench::ColdTiming timing;
+    std::size_t graph_nodes = 0, workspace_peak = 0;
+    int graph_calls = 1;
 };
 
 [[noreturn]] void usage(const char* message) {
@@ -110,7 +113,7 @@ struct Result {
                  "[--table-rows R0,...] "
                  "[--execution eager|graph|both] [--cache cold|warm|both] "
                  "[--mapping identity|fragmented] "
-                 "[--warmup N] [--repeat N] [--profile] [--csv-out PATH]\n",
+                 "[--warmup N] [--repeat N] [--graph-calls N] [--profile] [--csv-out PATH]\n",
                  message);
     std::exit(2);
 }
@@ -232,6 +235,9 @@ Options parse_options(int argc, char** argv) {
                 options.mapping = PageMapping::Fragmented;
             else
                 usage("--mapping expects identity or fragmented");
+        } else if (argument == "--graph-calls") {
+            options.graph_calls =
+                parse_i32(next("--graph-calls requires a value"), 1, 128, "--graph-calls");
         } else if (argument == "--warmup") {
             options.warmup = parse_i32(next("--warmup requires a value"), 0, 10000, "--warmup");
         } else if (argument == "--repeat") {
@@ -246,6 +252,9 @@ Options parse_options(int argc, char** argv) {
             usage("unknown argument");
         }
     }
+    if (options.graph_calls > 1 &&
+        (options.cache != CacheMode::Warm || options.execution != Execution::Graph))
+        usage("repeated graphs require --cache warm --execution graph");
     for (const std::int32_t tokens : options.tokens) {
         for (const std::int32_t context : options.contexts) {
             if (context > std::numeric_limits<std::int32_t>::max() - tokens) {
@@ -382,6 +391,28 @@ std::int32_t profile_visible(std::span<const std::int32_t> contexts,
     return visible;
 }
 
+__global__ void initialize_values(__nv_bfloat16* data, std::size_t count, unsigned seed,
+                                  float scale) {
+    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    unsigned value = static_cast<unsigned>(i) + seed;
+    value ^= value >> 16;
+    value *= 0x7feb352dU;
+    value ^= value >> 15;
+    value *= 0x846ca68bU;
+    value ^= value >> 16;
+    data[i] = __float2bfloat16_rn((float(value >> 8) * (2.f / 16777216.f) - 1.f) * scale);
+}
+
+DeviceBuffer varied_values(std::size_t count, unsigned seed, float scale) {
+    DeviceBuffer result(count * 2);
+    initialize_values<<<(count + 255) / 256, 256>>>(static_cast<__nv_bfloat16*>(result.p), count,
+                                                    seed, scale);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return result;
+}
+
 class Case {
 public:
     Case(Geometry geometry, KvCacheStorage storage, std::int32_t tokens,
@@ -395,12 +426,13 @@ public:
           mapping_(mapping), logical_pages_(padded_ / kPagedKVPageSize),
           physical_pages_(mapping == PageMapping::Identity ? batch_ * logical_pages_
                                                            : 2 * batch_ * logical_pages_ + 1),
-          q_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * geometry.query_heads * tokens *
-                              batch_)),
-          k_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * geometry.kv_heads * tokens *
-                              batch_)),
-          v_(bench::make_bf16(static_cast<std::size_t>(kHeadDim) * geometry.kv_heads * tokens *
-                              batch_)),
+          q_(varied_values(static_cast<std::size_t>(kHeadDim) * geometry.query_heads * tokens *
+                               batch_,
+                           101, .25f)),
+          k_(varied_values(static_cast<std::size_t>(kHeadDim) * geometry.kv_heads * tokens * batch_,
+                           103, .25f)),
+          v_(varied_values(static_cast<std::size_t>(kHeadDim) * geometry.kv_heads * tokens * batch_,
+                           107, 1.f)),
           positions_(static_cast<std::size_t>(tokens) * batch_ * sizeof(std::int32_t)),
           valid_columns_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
           table_rows_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
@@ -463,6 +495,27 @@ public:
                               cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(table_rows_.p, table_rows.data(), table_rows_.bytes,
                               cudaMemcpyHostToDevice));
+        // Populate every represented cache row through the public codec, outside measurement.
+        // A row view selects its own table while all physical planes remain shared.
+        std::vector<std::int32_t> initial_positions(padded_);
+        for (int pos = 0; pos < padded_; ++pos) initial_positions[pos] = pos;
+        DeviceBuffer dp(std::size_t(padded_) * 4);
+        CUDA_CHECK(cudaMemcpy(dp.p, initial_positions.data(), dp.bytes, cudaMemcpyHostToDevice));
+        Tensor positions(dp.p, DType::I32, {padded_});
+        for (int row = 0; row < batch_; ++row) {
+            auto initial_k =
+                varied_values(std::size_t(kHeadDim) * geometry.kv_heads * padded_, 211 + row, .25f);
+            auto initial_v =
+                varied_values(std::size_t(kHeadDim) * geometry.kv_heads * padded_, 311 + row, 1.f);
+            Tensor k(initial_k.p, DType::BF16, {kHeadDim, geometry.kv_heads, padded_});
+            Tensor v(initial_v.p, DType::BF16, {kHeadDim, geometry.kv_heads, padded_});
+            auto row_cache = cache_view_;
+            row_cache.block_table =
+                Tensor(static_cast<std::int32_t*>(block_table_.p) + row * logical_pages_,
+                       DType::I32, {logical_pages_});
+            ops::kv_cache_append(k, v, positions, row_cache, nullptr);
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
     }
 
     void launch(Entry entry, cudaStream_t stream) {
@@ -480,6 +533,12 @@ public:
     }
 
     [[nodiscard]] std::size_t workspace_bytes() const noexcept { return workspace_bytes_; }
+
+    [[nodiscard]] std::size_t workspace_peak() const {
+        if (workspace_.used() != 0 || workspace_.peak_used() > workspace_bytes_)
+            throw std::runtime_error("attention workspace query mismatch");
+        return workspace_.peak_used();
+    }
 
 private:
     PagedKVStorageLayout storage_layout_;
@@ -617,19 +676,10 @@ double contraction_flops(const Geometry& geometry, std::span<const std::int32_t>
     return 2.0 * kHeadDim * geometry.query_heads * causal_key_sum(contexts, valid_columns);
 }
 
-double physical_kv_read_bytes(const Geometry& geometry, KvCacheStorage storage,
-                              std::span<const std::int32_t> contexts,
-                              std::span<const std::int32_t> valid_columns) {
+double unique_kv_bytes(const Geometry& geometry, KvCacheStorage storage,
+                       std::span<const std::int32_t> contexts,
+                       std::span<const std::int32_t> valid_columns) {
     return cache_footprint_bytes(geometry, storage, contexts, valid_columns, true);
-}
-
-double qk_tensor_peak_tflops(KvCacheStorage storage) {
-    // The cache storage does not by itself prescribe the QK operand type. The production NVFP4
-    // route expands represented Q/K to FP16, whereas FP8 and K8V4 use E4M3 Q/K. All remaining
-    // public routes use the BF16/FP16 dense peak in this benchmark's mixed-roofline model.
-    return storage == KvCacheStorage::Fp8E4M3Row256 || storage == KvCacheStorage::Fp8KeyNvfp4Value
-               ? kDenseFp8TcTflops
-               : kDenseF16Bf16TcTflops;
 }
 
 bench::ColdTiming measure(Case& data, Entry entry, Execution execution, CacheState cache,
@@ -647,40 +697,31 @@ bench::ColdTiming measure(Case& data, Entry entry, Execution execution, CacheSta
 }
 
 void report(const Result& result) {
-    const double seconds        = result.timing.median_us * 1.0e-6;
-    const double logical_gbps   = result.logical_bytes / seconds / 1.0e9;
-    const double physical_gbps  = result.physical_bytes / seconds / 1.0e9;
-    const double cache_gbps     = result.physical_kv_read_bytes / seconds / 1.0e9;
-    const double tflops         = (result.qk_flops + result.pv_flops) / seconds / 1.0e12;
-    const double qk_tflops      = result.qk_flops / seconds / 1.0e12;
-    const double pv_tflops      = result.pv_flops / seconds / 1.0e12;
-    const double qk_peak        = qk_tensor_peak_tflops(result.storage);
-    const double mixed_floor_us = (result.qk_flops / (qk_peak * 1.0e12) +
-                                   result.pv_flops / (kDenseF16Bf16TcTflops * 1.0e12)) *
-                                  1.0e6;
-    const double tensor_core_roofline =
-        (result.qk_flops + result.pv_flops) / ((mixed_floor_us * 1.0e-6) * 1.0e12);
-    std::printf("entry=%-6s geometry=%-14s kv=%-6s mapping=%-10s execution=%-5s cache=%-4s "
-                "B=%d W=%d contexts=%s valid=%s rows=%s "
-                "workspace=%9zu median=%10.3f us min=%10.3f us p95=%10.3f us "
-                "logical=%8.1f GB/s physical=%8.1f GB/s math=%7.2f TFLOP/s "
-                "(%5.1f%% of %.1f)\n",
-                entry_name(result.entry), result.geometry.name, storage_name(result.storage),
-                mapping_name(result.mapping), execution_name(result.execution),
-                cache_name(result.cache), result.batch, result.tokens, result.row_contexts.c_str(),
-                result.valid_columns.c_str(), result.table_rows.c_str(), result.workspace_bytes,
-                result.timing.median_us, result.timing.min_us, result.timing.p95_us, logical_gbps,
-                physical_gbps, tflops, tflops / tensor_core_roofline * 100.0, tensor_core_roofline);
+    const double seconds       = result.timing.median_us * 1.0e-6;
+    const double logical_gbps  = result.logical_bytes / seconds / 1.0e9;
+    const double physical_gbps = result.physical_bytes / seconds / 1.0e9;
+    const double cache_gbps    = result.unique_kv_bytes / seconds / 1.0e9;
+    const double tflops        = (result.qk_flops + result.pv_flops) / seconds / 1.0e12;
+    const double qk_tflops     = result.qk_flops / seconds / 1.0e12;
+    const double pv_tflops     = result.pv_flops / seconds / 1.0e12;
+    std::printf(
+        "entry=%-6s geometry=%-14s kv=%-6s mapping=%-10s execution=%-5s cache=%-4s "
+        "B=%d W=%d contexts=%s valid=%s rows=%s "
+        "workspace=%9zu peak=%9zu nodes=%zu calls=%d median=%10.3f us min=%10.3f us p95=%10.3f us "
+        "logical_payload=%8.1f GB/s physical_payload=%8.1f GB/s math=%7.2f TFLOP/s\n",
+        entry_name(result.entry), result.geometry.name, storage_name(result.storage),
+        mapping_name(result.mapping), execution_name(result.execution), cache_name(result.cache),
+        result.batch, result.tokens, result.row_contexts.c_str(), result.valid_columns.c_str(),
+        result.table_rows.c_str(), result.workspace_bytes, result.workspace_peak,
+        result.graph_nodes, result.graph_calls, result.timing.median_us, result.timing.min_us,
+        result.timing.p95_us, logical_gbps, physical_gbps, tflops);
     std::printf("  vectors K=%.0f V=%.0f bytes cache logical=%.0f physical=%.0f bytes "
                 "qk_flops=%.0f pv_flops=%.0f qk_full_op=%7.2f TFLOP/s "
-                "pv_full_op=%7.2f TFLOP/s mixed_tc_floor=%8.3f us "
-                "mixed_tc_roofline=%5.1f%% physical_kv_read=%.0f bytes "
-                "effective_cache=%8.1f GB/s (%5.1f%% of %.1f)\n",
+                "pv_full_op=%7.2f TFLOP/s unique_kv=%.0f bytes "
+                "unique_cache_rate=%8.1f GB/s\n",
                 result.key_vector_bytes, result.value_vector_bytes, result.logical_cache_bytes,
                 result.physical_cache_bytes, result.qk_flops, result.pv_flops, qk_tflops, pv_tflops,
-                mixed_floor_us, mixed_floor_us / result.timing.median_us * 100.0,
-                result.physical_kv_read_bytes, cache_gbps,
-                cache_gbps / kColdPureReadCeilingGBs * 100.0, kColdPureReadCeilingGBs);
+                result.unique_kv_bytes, cache_gbps);
 }
 
 void write_csv(const Options& options, const std::vector<Result>& results) {
@@ -689,13 +730,13 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
     if (!path.parent_path().empty()) { std::filesystem::create_directories(path.parent_path()); }
     std::ofstream output(path);
     if (!output) { throw std::runtime_error("failed to open CSV output"); }
-    output << "entry,geometry,kv_dtype,mapping,execution,cache,B,W,row_contexts,valid_columns,"
-              "table_rows,workspace_bytes,logical_bytes,physical_bytes,logical_cache_bytes,"
-              "key_vector_bytes,value_vector_bytes,physical_cache_bytes,qk_flops,pv_flops,"
-              "qk_full_op_tflops,pv_full_op_tflops,qk_tensor_peak_tflops,"
-              "pv_tensor_peak_tflops,mixed_tc_floor_us,mixed_tc_roofline_pct,"
-              "physical_kv_read_bytes,"
-              "physical_kv_read_gbps,median_us,min_us,p95_us\n";
+    output
+        << "entry,geometry,kv_dtype,mapping,execution,cache,B,W,row_contexts,valid_columns,"
+           "table_rows,workspace_bytes,logical_bytes,physical_bytes,logical_cache_bytes,"
+           "key_vector_bytes,value_vector_bytes,physical_cache_bytes,qk_flops,pv_flops,"
+           "qk_full_op_tflops,pv_full_op_tflops,"
+           "unique_kv_bytes,"
+           "unique_kv_gbps,median_us,min_us,p95_us,graph_nodes,workspace_peak_bytes,graph_calls\n";
     for (const Result& result : results) {
         output << entry_name(result.entry) << ',' << result.geometry.name << ','
                << storage_name(result.storage) << ',' << mapping_name(result.mapping) << ','
@@ -706,18 +747,12 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
                << result.logical_cache_bytes << ',' << result.key_vector_bytes << ','
                << result.value_vector_bytes << ',' << result.physical_cache_bytes << ','
                << result.qk_flops << ',' << result.pv_flops << ',';
-        const double seconds        = result.timing.median_us * 1.0e-6;
-        const double qk_peak        = qk_tensor_peak_tflops(result.storage);
-        const double mixed_floor_us = (result.qk_flops / (qk_peak * 1.0e12) +
-                                       result.pv_flops / (kDenseF16Bf16TcTflops * 1.0e12)) *
-                                      1.0e6;
+        const double seconds = result.timing.median_us * 1.0e-6;
         output << result.qk_flops / seconds / 1.0e12 << ',' << result.pv_flops / seconds / 1.0e12
-               << ',' << qk_peak << ',' << kDenseF16Bf16TcTflops << ',' << mixed_floor_us << ','
-               << mixed_floor_us / result.timing.median_us * 100.0 << ','
-               << result.physical_kv_read_bytes << ','
-               << result.physical_kv_read_bytes / seconds / 1.0e9;
+               << ',' << result.unique_kv_bytes << ',' << result.unique_kv_bytes / seconds / 1.0e9;
         output << ',' << result.timing.median_us << ',' << result.timing.min_us << ','
-               << result.timing.p95_us << '\n';
+               << result.timing.p95_us << ',' << result.graph_nodes << ',' << result.workspace_peak
+               << ',' << result.graph_calls << '\n';
     }
 }
 
@@ -731,8 +766,10 @@ void profile(Case& data, Entry entry, const Geometry& geometry, KvCacheStorage s
     if (execution == Execution::Graph) {
         data.launch(entry, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
-        graph.capture(stream,
-                      [&](cudaStream_t launch_stream) { data.launch(entry, launch_stream); });
+        graph.capture(stream, [&](cudaStream_t launch_stream) {
+            for (int call = 0; call < options.graph_calls; ++call)
+                data.launch(entry, launch_stream);
+        });
         for (int index = 0; index < options.warmup; ++index) { graph.launch(stream); }
     } else {
         for (int index = 0; index < options.warmup; ++index) { data.launch(entry, stream); }
@@ -744,11 +781,12 @@ void profile(Case& data, Entry entry, const Geometry& geometry, KvCacheStorage s
     }
     std::printf(
         "PROFILE entry=%s geometry=%s kv=%s mapping=%s dispatch=public execution=%s cache=%s "
-        "B=%d W=%d contexts=%.*s valid=%.*s rows=%.*s\n",
+        "B=%d W=%d contexts=%.*s valid=%.*s rows=%.*s graph_calls=%d\n",
         entry_name(entry), geometry.name, storage_name(storage), mapping_name(options.mapping),
         execution_name(execution), cache_name(cache), batch, width,
         static_cast<int>(contexts.size()), contexts.data(), static_cast<int>(valid_columns.size()),
-        valid_columns.data(), static_cast<int>(table_rows.size()), table_rows.data());
+        valid_columns.data(), static_cast<int>(table_rows.size()), table_rows.data(),
+        options.graph_calls);
     std::fflush(stdout);
     CUDA_CHECK(cudaProfilerStart());
     if (execution == Execution::Graph)
@@ -869,7 +907,8 @@ int main(int argc, char** argv) {
                                     data.launch(entry, stream);
                                     CUDA_CHECK(cudaStreamSynchronize(stream));
                                     graph.capture(stream, [&](cudaStream_t launch_stream) {
-                                        data.launch(entry, launch_stream);
+                                        for (int call = 0; call < options.graph_calls; ++call)
+                                            data.launch(entry, launch_stream);
                                     });
                                 }
                                 for (const Execution execution :
@@ -917,10 +956,18 @@ int main(int argc, char** argv) {
                                                               rows.valid_columns),
                                             contraction_flops(geometry, rows.contexts,
                                                               rows.valid_columns),
-                                            physical_kv_read_bytes(geometry, storage, rows.contexts,
-                                                                   rows.valid_columns),
+                                            unique_kv_bytes(geometry, storage, rows.contexts,
+                                                            rows.valid_columns),
                                             measure(data, entry, execution, cache, &graph, flush,
                                                     stream, options.warmup, options.repeat)};
+                                        result.graph_nodes =
+                                            execution == Execution::Graph ? graph.nodes() : 0;
+                                        result.workspace_peak = data.workspace_peak();
+                                        result.graph_calls =
+                                            execution == Execution::Graph ? options.graph_calls : 1;
+                                        result.timing.median_us /= result.graph_calls;
+                                        result.timing.min_us /= result.graph_calls;
+                                        result.timing.p95_us /= result.graph_calls;
                                         report(result);
                                         results.push_back(result);
                                     }

@@ -61,6 +61,21 @@ int main() {
                           dflash_vision.speculative.backend == ninfer::SpeculativeBackend::DFlash &&
                           dflash_vision.speculative.draft_tokens == 7,
                       "CLI did not preserve the combined DFlash and Vision startup features");
+    for (const auto k : {1U, 2U, 7U, 15U}) {
+        const auto dflash2 = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
+                                    "dflash2", "--draft-tokens", std::to_string(k)});
+        failures += check(dflash2.speculative.backend == ninfer::SpeculativeBackend::DFlash2 &&
+                              dflash2.speculative.draft_tokens == k,
+                          "CLI did not preserve the DFlash2 draft count");
+    }
+    for (const auto k : {0U, 16U}) {
+        failures +=
+            check(rejects([&] {
+                      (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
+                                   "dflash2", "--draft-tokens", std::to_string(k)});
+                  }),
+                  "CLI accepted an unsupported DFlash2 draft count");
+    }
     const ninfer::cli::Options nvfp4 =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "nvfp4"});
     failures += check(nvfp4.kv_cache == ninfer::KvCacheStorage::Nvfp4Group16,

@@ -386,7 +386,9 @@ All registered model IDs support:
   tools, local response state, token counting, and usage accounting.
 
 The 35B-A3B target additionally supports DFlash with draft windows from one to fifteen for Text and
-image/video Vision prompts.
+image/video Vision prompts. Qwen3.8-27B artifacts with the DFlash2 companion weights support
+`--spec dflash2 --draft-tokens 7` for the same Text/Vision Engine path, with draft counts 1..15
+and either full or optimized proposal heads.
 
 The product boundary remains intentionally small:
 
