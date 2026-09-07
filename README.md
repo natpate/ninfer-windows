@@ -27,14 +27,14 @@ DFlash2 companion weights, so `--spec dflash2` is currently unsupported on it. O
 artifacts remain usable for Text, Vision and MTP in the current build, but cannot enable
 DFlash2. See [DFlash2 on Windows](docs/windows.md#dflash2) for launch and validation commands.
 
-Qwen3.6-27B and Qwen3.8-27B each expose two registered weight profiles. The version-2 artifact
-identity selects the profile without a separate runtime flag; Qwen3.8 uses target key
-`qwen3_8_27b` while sharing the 27B execution package. The Qwen3.6 `nvfp4` profile uses W4A4 Tensor
-Core MMA for prefill and A16 NVFP4 kernels for decode. The Qwen3.8 `nvfp4` profile preserves its
-source's mixed allocation: NVFP4 MLP weights in Text layers 0–55 and row-scaled FP8 for the token
-embedding, attention input/output projections, GDN Q/K/V/Z and output projections, output head, and
-remaining MLP weights. All four 27B artifacts retain the same Text, Vision, MTP, prefix-reuse, CLI,
-and serving routes.
+Qwen3.6-27B exposes two registered weight profiles (`groupwise-int` and `nvfp4`); Qwen3.8-27B
+exposes three, adding `nvfp4full`. The version-2 artifact identity selects the profile without a
+separate runtime flag; Qwen3.8 uses target key `qwen3_8_27b` while sharing the 27B execution
+package. The Qwen3.6 `nvfp4` profile uses W4A4 Tensor Core MMA for prefill and A16 NVFP4 kernels
+for decode. The Qwen3.8 `nvfp4` profile preserves its source's mixed allocation: NVFP4 MLP weights
+in Text layers 0–55 and row-scaled FP8 for the token embedding, attention input/output projections,
+GDN Q/K/V/Z and output projections, output head, and remaining MLP weights. All five 27B artifacts
+retain the same Text, Vision, MTP, prefix-reuse, CLI, and serving routes.
 
 ## Upstream
 
