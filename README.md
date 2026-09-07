@@ -20,11 +20,12 @@ runtime:
 | [Qwen3.8-27B NVFP4F](https://huggingface.co/cometkim/Qwen3.8-27B-nvfp4full-NInfer) | `nvfp4full` | `qwen3_8_27b_nvfp4full.ninfer` | 18,324,059,648 bytes (17.07 GiB) | `2f59cc27d67cb7acba0ba8a0e0881ac89c1db2b267a60119a696fefa12faf4e7` |
 | [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | 22,783,246,080 bytes (21.22 GiB) | `1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2` |
 
-The current Qwen3.8 artifacts include DFlash2 companion weights. Select
-`--spec dflash2 --draft-tokens 7 --lm-head-draft` in a current source build; portable v0.6.1
-predates this backend. Older Qwen3.8 artifacts remain usable for Text, Vision and MTP in the
-current build, but cannot enable DFlash2. See [DFlash2 on Windows](docs/windows.md#dflash2)
-for launch and validation commands.
+The current Qwen3.8 `groupwise-int` and `nvfp4` artifacts include DFlash2 companion weights;
+select `--spec dflash2 --draft-tokens 7 --lm-head-draft` in a current source build (portable
+v0.6.1 predates this backend). The `nvfp4full` (Qwen3.8-27B NVFP4F) artifact does not include
+DFlash2 companion weights, so `--spec dflash2` is currently unsupported on it. Older Qwen3.8
+artifacts remain usable for Text, Vision and MTP in the current build, but cannot enable
+DFlash2. See [DFlash2 on Windows](docs/windows.md#dflash2) for launch and validation commands.
 
 Qwen3.6-27B and Qwen3.8-27B each expose two registered weight profiles. The version-2 artifact
 identity selects the profile without a separate runtime flag; Qwen3.8 uses target key
