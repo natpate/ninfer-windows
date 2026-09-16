@@ -1,5 +1,6 @@
 #pragma once
 #include "core/tensor.h"
+#include "core/weight.h"
 #include "core/layout.h"
 #include "core/arena.h"
 #include "ninfer/ops/sampling.h"
@@ -27,8 +28,8 @@ SelectorWorkspace allocate_selector_workspace(Allocator& allocator, SelectorRout
 
 void candidate_selector_path_dispatch(const Tensor& candidate_ids, const Tensor& unary_scores,
                                       const Tensor& projected_hidden, const Tensor& anchors,
-                                      const Tensor& predecessor_codebook,
-                                      const Tensor& successor_codebook,
+                                      const Weight& predecessor_codebook,
+                                      const Weight& successor_codebook,
                                       const Tensor& base_positions, const SamplingConfig* configs,
                                       Tensor& drafts, Tensor& proposal_q, WorkspaceArena& workspace,
                                       cudaStream_t stream);

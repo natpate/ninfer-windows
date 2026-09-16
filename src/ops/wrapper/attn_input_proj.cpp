@@ -255,6 +255,17 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_value_weight, Tens
     require_matrix(q, kQRows, cols, "q");
     require_matrix(k, kKvRows, cols, "k");
     require_matrix(v, kKvRows, cols, "v");
+
+    if (query_key_value_weight.qtype == QType::NVFP4) {
+        if (hidden != 5120 || query_key_value_weight.n != kRows ||
+            query_key_value_weight.k != hidden) {
+            throw std::invalid_argument("attn_input_proj: unsupported NVFP4 Q/K/V profile");
+        }
+        (void)detail::validate_nvfp4_weight(query_key_value_weight, "attn_input_proj");
+        detail::nvfp4_dflash2_attn_input(x, query_key_value_weight, q, k, v, stream);
+        return;
+    }
+
     require_q8_rowsplit(query_key_value_weight, kRows, hidden, "query/key/value weight");
 
     detail::q8_attn_input_dispatch(x, query_key_value_weight, q, k, v, stream);

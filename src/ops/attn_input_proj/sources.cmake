@@ -13,6 +13,7 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/nvfp4/nvfp4_attn_input_small_t.cu"
   "${CMAKE_CURRENT_LIST_DIR}/nvfp4/nvfp4_attn_input_w4a4.cu"
   "${CMAKE_CURRENT_LIST_DIR}/nvfp4/nvfp4_attn_input_plan.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/nvfp4/nvfp4_dflash2_attn_input.cu"
   "${CMAKE_CURRENT_LIST_DIR}/q4_q5/q4_q5_attn_input_gemm_mma.cu"
   "${CMAKE_CURRENT_LIST_DIR}/q4_q5/q4_q5_attn_input_small_t.cu"
   "${CMAKE_CURRENT_LIST_DIR}/q4_q5/q4_q5_attn_input_plan.cpp"

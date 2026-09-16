@@ -15,4 +15,10 @@ extern const Nvfp4LinearShape kNvfp4N16384K5120;
 extern const Nvfp4LinearShape kNvfp4N34816K5120;
 extern const Nvfp4LinearShape kNvfp4N5120K6144;
 extern const Nvfp4LinearShape kNvfp4N5120K17408;
+// DFlash2 drafter module shapes (weight-only A16 routes).
+extern const Nvfp4LinearShape kNvfp4DFlash2Feature;
+extern const Nvfp4LinearShape kNvfp4DFlash2Qkv;
+extern const Nvfp4LinearShape kNvfp4DFlash2AttnOut;
+extern const Nvfp4LinearShape kNvfp4DFlash2ConvProj;
+extern const Nvfp4LinearShape kNvfp4DFlash2Selector;
 } // namespace ninfer::ops::detail

@@ -37,4 +37,12 @@ void context_kv_materialize_launch(
     ContextKVMaterializeExecutionEnvelope envelope, ContextKVMaterializeRoute route,
     const Tensor& key_scratch, cudaStream_t stream);
 
+// NVFP4 key/value parents: one MMA family serves every routed column count with the same
+// envelope filtering, key scratch, and cache stores as the W8 launch.
+void context_kv_materialize_nvfp4_launch(
+    const Tensor& context, const Tensor& positions, const Tensor& counts, const Tensor& state_slots,
+    const std::array<ContextKVMaterializeLayerView, kContextKVMaterializeLayers>& layers,
+    ContextKVMaterializeExecutionEnvelope envelope, ContextKVMaterializeRoute route,
+    const Tensor& key_scratch, cudaStream_t stream);
+
 } // namespace ninfer::ops::detail

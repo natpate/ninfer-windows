@@ -111,6 +111,30 @@ void geometry_and_views() {
     require(query.weight_scale_divisor == 2 && query.input_scale_divisor == 3 &&
                 context.input_scale_divisor == 4 && nv_parent.weight_scale_divisor == 2,
             "per-use native parameters changed the parent");
+
+    // Context K/V consume aligned rows of a shared QKV parent, not repacked weights.
+    const auto geometry = weight_geometry(QType::NVFP4, QuantLayout::BlockScaleK16M128x4,
+                                          std::array<std::uint64_t, 2>{6144, 5120});
+    std::vector<std::byte> qkv(geometry.bytes);
+    WeightParent qkv_parent{geometry, qkv.data(), 2.0F};
+    for (const std::uint64_t begin : {4096U, 5120U}) {
+        const WeightView view{{1024, 5120},
+                              {{&qkv_parent, begin * 5120, (begin + 1024) * 5120}}};
+        const auto native = native_weight(view);
+        require(native.qdata == qkv.data() + begin * 2560 &&
+                    native.scales == qkv.data() + 6144 * 2560 + (begin / 128) * 80 * 512 &&
+                    native.n == 1024 && native.k == 5120 &&
+                    native.weight_scale_divisor == 2.0F && native.payload == qkv.data(),
+                "aligned NVFP4 context view lost code/scale planes or parent divisor");
+    }
+    rejects<std::invalid_argument>([&] {
+        (void)native_weight(WeightView{{1024, 5120},
+                                       {{&qkv_parent, 4097ULL * 5120, 5121ULL * 5120}}});
+    }, "unaligned NVFP4 row origin accepted");
+    rejects<std::invalid_argument>([&] {
+        (void)native_weight(WeightView{{1023, 5120},
+                                       {{&qkv_parent, 4096ULL * 5120, 5119ULL * 5120}}});
+    }, "unaligned NVFP4 row count accepted");
 }
 
 void invalid_directories() {

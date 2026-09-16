@@ -168,8 +168,12 @@ SingleProjectionWeight prepare_attn_input_proj_weights(const WeightInput& query,
             "QKV input projection: unsupported logical geometry");
     const std::array inputs{query, key, value};
     auto result = single(inputs);
-    require(result.weight.qtype == QType::Q8_G32_FP16,
-            "QKV input projection: native form requires Q8");
+    // The three-output native family is the fused Q8 row-split parent; the NVFP4-encoded
+    // DFlash2 module carries the same [query, key, value] rows as a BlockScaleK16M128x4
+    // parent served by the nvfp4 attention-input route.
+    require(result.weight.qtype == QType::Q8_G32_FP16 ||
+                (result.weight.qtype == QType::NVFP4 && q == std::vector<std::uint64_t>{4096, 5120}),
+            "QKV input projection: native form requires Q8 or the DFlash2 NVFP4 parent");
     return result;
 }
 

@@ -1,33 +1,37 @@
+// NVFP4 projection kernels of context_kv_materialize: the weight-only NVFP4 [1024,5120]
+// key/value parents (row slices of the draft module's query_key_value payload). One MMA family
+// serves every column count: e2m1 codes stage raw and decode to exactly-representable BF16, the
+// stored E4M3 scales apply in FP32 per 16-value group after each group's MMA accumulation, and
+// the payload divisor folds into the captured scales. The activation staging, envelope filtering,
+// key scratch, and cache stores are shared with the W8 family through context_kv_common.cuh.
 #include "ops/context_kv_materialize/launch.h"
 #include "core/device.h"
 #include "ops/common/memory.cuh"
 #include "ops/common/mma.cuh"
-#include "ops/linear/q8/q8_ksplit_mma.cuh"
-#include "ops/common/warp.cuh"
 #include "ops/context_kv_materialize/context_kv_common.cuh"
+#include "ops/linear/nvfp4/nvfp4_codec.cuh"
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 namespace ninfer::ops::detail {
 namespace {
-constexpr int kLayers  = static_cast<int>(kContextKVMaterializeLayers);
-constexpr int kRows    = 1024;
-constexpr int kHeadDim = 128;
+
+constexpr int kHidden = 5120, kRows = kContextKVRows, kHeadDim = kContextKVHeadDim;
 
 template <int Rows, int Columns, int BlockK>
-union alignas(16) MaterializeStorage {
+union alignas(16) MaterializeNvfp4Storage {
     struct {
         __nv_bfloat16 code_values[Rows][BlockK];
         __nv_bfloat16 activations[Columns][BlockK];
-        std::uint8_t codes[Rows][BlockK];
-        std::uint16_t scales[Rows][BlockK / 32];
+        std::uint8_t codes[Rows][BlockK / 2];
+        std::uint8_t scales[Rows][BlockK / 16];
     } mainloop;
 
     float scores[Columns][Rows];
 };
 
 template <int Rows, int Columns, int BlockK, int ColumnWarps>
-__global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mma_kernel(
+__global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mma_nvfp4_kernel(
     const __nv_bfloat16* hidden, const int* positions, const int* counts, const int* slots,
     DeviceLayers layers, float* key_scratch, int width, int batch, int min_count, int max_count) {
     constexpr int kBlockRows = Rows, kBlockK = BlockK;
@@ -35,9 +39,11 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
     constexpr int kColumnWarps  = ColumnWarps;
     constexpr int kWarps = Rows / 16 * kColumnWarps, kThreads = kWarps * 32;
     constexpr int kWarpColumns = Columns / kColumnWarps, kTokenMmas = kWarpColumns / 8;
-    constexpr int kKTiles = 5120 / kBlockK;
+    constexpr int kKTiles = kHidden / kBlockK;
+    constexpr int kGroupsPerTile = kBlockK / 16;
     static_assert((Rows == 64 || Rows == 128) && Columns % (8 * ColumnWarps) == 0);
-    static_assert(5120 % kBlockK == 0 && kThreads <= 1024);
+    static_assert(kHidden % kBlockK == 0 && kThreads <= 1024);
+    static_assert((kBlockK % 16) == 0 && kBlockK <= 128);
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     const int warp_row = warp / kColumnWarps, warp_col = warp % kColumnWarps;
     const int gid = lane >> 2, lid = lane & 3;
@@ -50,8 +56,9 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
     const auto layer          = layers.layer[layer_index];
     const auto* weight_codes  = value ? layer.value_codes : layer.key_codes;
     const auto* weight_scales = value ? layer.value_scales : layer.key_scales;
+    const float inverse_divisor = value ? layer.value_inverse_divisor : layer.key_inverse_divisor;
     extern __shared__ __align__(16) unsigned char shared_bytes[];
-    auto& storage  = *reinterpret_cast<MaterializeStorage<Rows, Columns, BlockK>*>(shared_bytes);
+    auto& storage  = *reinterpret_cast<MaterializeNvfp4Storage<Rows, Columns, BlockK>*>(shared_bytes);
     auto& mainloop = storage.mainloop;
     {
         float accumulators[kTokenMmas][4] = {};
@@ -64,12 +71,13 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
                 const int k8      = item - column * (kBlockK / 8);
                 auto* destination = &mainloop.activations[column][swizzle_128(column, k8 * 8)];
                 if (column < live_columns) {
-                    cp_async<16, Cache::ca>(destination,
-                                            hidden +
-                                                static_cast<std::int64_t>(context_column(
-                                                    column_begin + column, width, max_count)) *
-                                                    5120 +
-                                                k_begin + k8 * 8);
+                    cp_async<16, Cache::ca>(
+                        destination,
+                        hidden +
+                            static_cast<std::int64_t>(context_column(column_begin + column, width,
+                                                                    max_count)) *
+                                kHidden +
+                            k_begin + k8 * 8);
                 } else {
                     cp_async_zfill<16, Cache::ca>(destination, hidden + k_begin + k8 * 8, 0);
                 }
@@ -78,42 +86,56 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
 
         const auto stage_weight = [&](int k_tile) {
             const int k_begin     = k_tile * kBlockK;
-            constexpr int kChunks = kBlockRows * (kBlockK / 16);
+            constexpr int kChunks = kBlockRows * (kBlockK / 32);
             for (int item = tid; item < kChunks; item += kThreads) {
-                const int local_row = item / (kBlockK / 16);
-                const int chunk     = item - local_row * (kBlockK / 16);
+                const int local_row = item / (kBlockK / 32);
+                const int chunk     = item - local_row * (kBlockK / 32);
                 cp_async<16, Cache::cg>(
                     &mainloop.codes[local_row][chunk * 16],
-                    weight_codes + static_cast<std::int64_t>(row_begin + local_row) * 5120 +
-                        k_begin + chunk * 16);
+                    weight_codes + static_cast<std::int64_t>(row_begin + local_row) * (kHidden / 2) +
+                        k_begin / 2 + chunk * 16);
             }
+            // The scale plane is the registered K16M128x4 blocked arrangement: each k-tile's
+            // groups span BlockK/64 consecutive 512-byte tiles, four group bytes per row and tile.
             for (int local_row = tid; local_row < kBlockRows; local_row += kThreads) {
-                const std::int64_t group =
-                    static_cast<std::int64_t>(row_begin + local_row) * (5120 / 32) + k_begin / 32;
-                cp_async<kBlockK / 32 * sizeof(std::uint16_t)>(
-                    &mainloop.scales[local_row][0], weight_scales + group * sizeof(std::uint16_t));
+                const int row       = row_begin + local_row;
+                const int in_tile   = (row % 32) * 16 + ((row % 128) / 32) * 4;
+                const std::int64_t tile_base =
+                    static_cast<std::int64_t>(row / 128) * (kHidden / 64) + k_begin / 64;
+#pragma unroll
+                for (int half = 0; half < kBlockK / 64; ++half) {
+                    cp_async<4>(&mainloop.scales[local_row][half * 4],
+                                weight_scales + (tile_base + half) * 512 + in_tile);
+                }
             }
         };
 
-        // Signed Q8 codes are exactly representable in BF16. Apply the exact stored FP16
-        // scale in FP32 after each 32-wide MMA group; never round a scaled weight to BF16.
-        const auto decode_signed_codes = [&]() {
-            constexpr int kChunksPerRow = kBlockK / 8;
+        // E2M1 magnitudes are exactly representable in BF16; decode pairs straight to registers
+        // and keep the stored E4M3 scale application in FP32.
+        const auto decode_e2m1_codes = [&]() {
+            constexpr int kChunksPerRow = kBlockK / 32;
             for (int item = tid; item < kBlockRows * kChunksPerRow; item += kThreads) {
                 const int row      = item / kChunksPerRow;
                 const int chunk    = item - row * kChunksPerRow;
-                const int col      = chunk * 8;
-                const uint2 packed = *reinterpret_cast<const uint2*>(&mainloop.codes[row][col]);
-                ContextKVBf16x8 decoded;
+                const int col      = chunk * 32;
+                const uint4 packed = *reinterpret_cast<const uint4*>(&mainloop.codes[row][col / 2]);
+                ContextKVBf16x8 decoded[4];
+                const unsigned words[4] = {packed.x, packed.y, packed.z, packed.w};
 #pragma unroll
-                for (int pair = 0; pair < 4; ++pair) {
-                    const unsigned word = (pair < 2 ? packed.x : packed.y) >> ((pair & 1) * 16);
-                    const int q0        = static_cast<int>(static_cast<std::int8_t>(word & 0xffu));
-                    const int q1 = static_cast<int>(static_cast<std::int8_t>((word >> 8) & 0xffu));
-                    decoded.pair[pair] =
-                        __floats2bfloat162_rn(static_cast<float>(q0), static_cast<float>(q1));
+                for (int word = 0; word < 4; ++word) {
+#pragma unroll
+                    for (int byte = 0; byte < 4; ++byte) {
+                        const float2 values = decode_nvfp4_e2m1x2(
+                            static_cast<std::uint8_t>((words[word] >> (byte * 8)) & 0xffu));
+                        decoded[word].pair[byte] =
+                            __floats2bfloat162_rn(values.x, values.y);
+                    }
                 }
-                store_vec(&mainloop.code_values[row][swizzle_128(row, col)], decoded.raw);
+#pragma unroll
+                for (int vec = 0; vec < 4; ++vec) {
+                    store_vec(&mainloop.code_values[row][swizzle_128(row, col + vec * 8)],
+                              decoded[vec].raw);
+                }
             }
         };
 
@@ -125,17 +147,18 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
         for (int k_tile = 0; k_tile < kKTiles; ++k_tile) {
             cp_wait<0>();
             __syncthreads();
-            decode_signed_codes();
+            decode_e2m1_codes();
             __syncthreads();
 
-            // Capture scales before the next async weight stage reuses their shared plane.
-            float top_scales[kBlockK / 32], bottom_scales[kBlockK / 32];
+            // Capture the group scales (with the payload divisor folded in) before the next
+            // async weight stage reuses their shared plane.
+            float top_scales[kGroupsPerTile], bottom_scales[kGroupsPerTile];
 #pragma unroll
-            for (int g = 0; g < kBlockK / 32; ++g) {
-                top_scales[g] =
-                    __half2float(__ushort_as_half(mainloop.scales[warp_row * 16 + gid][g]));
+            for (int g = 0; g < kGroupsPerTile; ++g) {
+                top_scales[g] = decode_nvfp4_e4m3(mainloop.scales[warp_row * 16 + gid][g]) *
+                                inverse_divisor;
                 bottom_scales[g] =
-                    __half2float(__ushort_as_half(mainloop.scales[warp_row * 16 + gid + 8][g]));
+                    decode_nvfp4_e4m3(mainloop.scales[warp_row * 16 + gid + 8][g]) * inverse_divisor;
             }
             __syncthreads();
             const int next = k_tile + 1;
@@ -162,24 +185,17 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
                 }
             };
 
-            unsigned a_fragments[2][4];
-            unsigned b_fragments[2][kTokenMmas][2];
-            load_fragments(0, a_fragments[0], b_fragments[0]);
+            unsigned a_fragments[4];
+            unsigned b_fragments[kTokenMmas][2];
 #pragma unroll
-            for (int group = 0; group < kBlockK / 32; ++group) {
+            for (int group = 0; group < kGroupsPerTile; ++group) {
                 float group_acc[kTokenMmas][4] = {};
+                load_fragments(group, a_fragments, b_fragments);
 #pragma unroll
-                for (int step = 0; step < 2; ++step) {
-                    const int k_step = 2 * group + step;
-                    if (k_step + 1 < kBlockK / 16)
-                        load_fragments(k_step + 1, a_fragments[step ^ 1], b_fragments[step ^ 1]);
-#pragma unroll
-                    for (int t = 0; t < kTokenMmas; ++t)
-                        mma_bf16(group_acc[t][0], group_acc[t][1], group_acc[t][2], group_acc[t][3],
-                                 a_fragments[step][0], a_fragments[step][1], a_fragments[step][2],
-                                 a_fragments[step][3], b_fragments[step][t][0],
-                                 b_fragments[step][t][1]);
-                }
+                for (int t = 0; t < kTokenMmas; ++t)
+                    mma_bf16(group_acc[t][0], group_acc[t][1], group_acc[t][2], group_acc[t][3],
+                             a_fragments[0], a_fragments[1], a_fragments[2], a_fragments[3],
+                             b_fragments[t][0], b_fragments[t][1]);
 #pragma unroll
                 for (int t = 0; t < kTokenMmas; ++t) {
                     accumulators[t][0] =
@@ -251,12 +267,13 @@ template <int Rows, int Columns, int BlockK, int ColumnWarps>
 void launch_mma(const Tensor& x, const Tensor& positions, const Tensor& counts, const Tensor& slots,
                 DeviceLayers layers, ContextKVMaterializeExecutionEnvelope envelope,
                 const Tensor& scratch, cudaStream_t stream) {
-    constexpr int bytes = sizeof(MaterializeStorage<Rows, Columns, BlockK>);
+    constexpr int bytes = sizeof(MaterializeNvfp4Storage<Rows, Columns, BlockK>);
     if constexpr (bytes > 48 * 1024)
-        CUDA_CHECK(cudaFuncSetAttribute(context_kv_mma_kernel<Rows, Columns, BlockK, ColumnWarps>,
-                                        cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
-    context_kv_mma_kernel<Rows, Columns, BlockK, ColumnWarps>
-        <<<dim3(1024 / Rows, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10),
+        CUDA_CHECK(cudaFuncSetAttribute(
+            context_kv_mma_nvfp4_kernel<Rows, Columns, BlockK, ColumnWarps>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+    context_kv_mma_nvfp4_kernel<Rows, Columns, BlockK, ColumnWarps>
+        <<<dim3(kRows / Rows, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10),
            Rows / 16 * ColumnWarps * 32, bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const int*>(positions.data),
             static_cast<const int*>(counts.data), static_cast<const int*>(slots.data), layers,
@@ -265,121 +282,39 @@ void launch_mma(const Tensor& x, const Tensor& positions, const Tensor& counts, 
     CUDA_CHECK(cudaGetLastError());
 }
 
-struct MaterializeProjectionEpilogue {
-    DeviceLayerView layer;
-    const int* positions;
-    const int* counts;
-    const int* slots;
-    float* scratch;
-    int layer_index, width, batch, min_count, max_count;
-    bool value;
-
-    __device__ void store(int row, int packed_column, float result) const {
-        if (packed_column >= max_count * batch) return;
-        const int column  = context_column(packed_column, width, max_count);
-        const int request = column / width, count = counts[request];
-        if (count < min_count || count > max_count || column % width >= count) return;
-        if (!value)
-            scratch[row + 1024LL * (packed_column + max_count * batch * layer_index)] = result;
-        else {
-            const auto dst     = row % 128 + 128LL * ((positions[column] & 2047) +
-                                                  (long long)layer.padded_capacity *
-                                                      (row / 128 + 8 * slots[request]));
-            layer.cache_v[dst] = __float2half_rn(__bfloat162float(__float2bfloat16_rn(result)));
-        }
-    }
-
-    __device__ void store_pair(int row, int col, float4 sum, int columns) const {
-        if (col < columns) {
-            store(row, col, sum.x);
-            store(row + 8, col, sum.z);
-        }
-        if (col + 1 < columns) {
-            store(row, col + 1, sum.y);
-            store(row + 8, col + 1, sum.w);
-        }
-    }
-};
-
-struct ContextPrefixColumns {
-    int width, prefix;
-
-    __device__ __forceinline__ int operator()(int column) const {
-        return context_column(column, width, prefix);
-    }
-};
-
-template <int Columns, int KWarps = 8>
-using GroupedSchedule = Q8KSplitSchedule<KWarps, Columns, 1, Q8KSplitScaleAccess::Shared>;
-
-template <int Columns, int KWarps = 8>
-__global__ __launch_bounds__(KWarps * 32, 1) void context_kv_grouped_kernel(
-    const __nv_bfloat16* x, const int* positions, const int* counts, const int* slots,
-    DeviceLayers layers, float* scratch, int width, int batch, int min_count, int max_count) {
-    const int l        = blockIdx.z >> 1;
-    const bool value   = (blockIdx.z & 1) != 0;
-    const auto layer   = layers.layer[l];
-    const auto* codes  = value ? layer.value_codes : layer.key_codes;
-    const auto* scales = value ? layer.value_scales : layer.key_scales;
-    const MaterializeProjectionEpilogue epilogue{layer, positions, counts,    slots,     scratch, l,
-                                                 width, batch,     min_count, max_count, value};
-    q8_ksplit_mma<Q8LinearGeometry<1024, 5120>, Columns, GroupedSchedule<Columns, KWarps>,
-                  Q8ContiguousOutput, MaterializeProjectionEpilogue, Q8KSplitIdentityRows, true,
-                  true>(x, codes, scales, {nullptr, 0}, epilogue, {}, max_count * batch,
-                        ContextPrefixColumns{width, max_count});
-}
-
-template <int Columns, int KWarps = 8>
-void launch_grouped(const Tensor& x, const Tensor& positions, const Tensor& counts,
-                    const Tensor& slots, DeviceLayers layers,
-                    ContextKVMaterializeExecutionEnvelope envelope, const Tensor& scratch,
-                    cudaStream_t stream) {
-    context_kv_grouped_kernel<Columns, KWarps>
-        <<<dim3(64, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10), KWarps * 32, 0,
-           stream>>>(static_cast<const __nv_bfloat16*>(x.data),
-                     static_cast<const int*>(positions.data), static_cast<const int*>(counts.data),
-                     static_cast<const int*>(slots.data), layers, static_cast<float*>(scratch.data),
-                     x.ne[1], x.ne[2], envelope.min_count, envelope.max_count);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 } // namespace
 
-void context_kv_materialize_launch(
+void context_kv_materialize_nvfp4_launch(
     const Tensor& context, const Tensor& positions, const Tensor& counts, const Tensor& state_slots,
     const std::array<ContextKVMaterializeLayerView, kContextKVMaterializeLayers>& layers,
     ContextKVMaterializeExecutionEnvelope envelope, ContextKVMaterializeRoute route,
     const Tensor& key_scratch, cudaStream_t stream) {
     const DeviceLayers device_layers = make_device_layers(layers);
     using Route                      = ContextKVMaterializeRoute;
+    // Every column count serves from the MMA family; the small-column grouped schedules of the
+    // W8 table land on the 32-column MMA tile.
     switch (route) {
     case Route::KSplit16:
-        launch_grouped<16>(context, positions, counts, state_slots, device_layers, envelope,
-                           key_scratch, stream);
-        break;
     case Route::KSplit24:
-        launch_grouped<24>(context, positions, counts, state_slots, device_layers, envelope,
-                           key_scratch, stream);
-        break;
     case Route::Mma32:
-        launch_mma<64, 32, 128, 2>(context, positions, counts, state_slots, device_layers, envelope,
-                                   key_scratch, stream);
+        launch_mma<64, 32, 128, 2>(context, positions, counts, state_slots, device_layers,
+                                   envelope, key_scratch, stream);
         break;
     case Route::Mma80:
-        launch_mma<64, 80, 128, 5>(context, positions, counts, state_slots, device_layers, envelope,
-                                   key_scratch, stream);
+        launch_mma<64, 80, 128, 5>(context, positions, counts, state_slots, device_layers,
+                                   envelope, key_scratch, stream);
         break;
     case Route::Mma96:
-        launch_mma<64, 96, 128, 6>(context, positions, counts, state_slots, device_layers, envelope,
-                                   key_scratch, stream);
+        launch_mma<64, 96, 128, 6>(context, positions, counts, state_slots, device_layers,
+                                   envelope, key_scratch, stream);
         break;
     case Route::Fused64:
         launch_mma<128, 64, 128, 2>(context, positions, counts, state_slots, device_layers,
                                     envelope, key_scratch, stream);
         return;
     case Route::Mma64:
-        launch_mma<64, 64, 64, 2>(context, positions, counts, state_slots, device_layers, envelope,
-                                  key_scratch, stream);
+        launch_mma<64, 64, 64, 2>(context, positions, counts, state_slots, device_layers,
+                                  envelope, key_scratch, stream);
         break;
     }
     context_kv_key_post_launch(key_scratch, positions, counts, state_slots, device_layers,

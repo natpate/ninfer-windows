@@ -5,6 +5,7 @@
 #include "ops/context_kv_materialize/launch.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -35,6 +36,28 @@ void require_tensor(const Tensor& tensor, DType dtype, std::int32_t n0, std::int
 }
 
 void require_weight(const Weight& weight, const char* name) {
+    if (weight.qtype == QType::NVFP4) {
+        // The NVFP4 key/value parents are 128-row-aligned slices of the draft module's packed
+        // query_key_value payload: the code and scale planes keep the registered arrangement but
+        // no longer sit at the canonical single-payload offsets, so the geometry is checked here
+        // instead of validate_nvfp4_weight.
+        constexpr std::uint64_t kCodeBytes =
+            static_cast<std::uint64_t>(kKVSize) * static_cast<std::uint64_t>(kHidden / 2);
+        constexpr std::uint64_t kScaleBytes =
+            static_cast<std::uint64_t>(kKVSize) * static_cast<std::uint64_t>(kHidden / 16);
+        if (weight.layout != QuantLayout::BlockScaleK16M128x4 ||
+            weight.scale_dtype != DType::FP8_E4M3FN || weight.group != 16 ||
+            weight.group_size != 16 || weight.ndim != 2 || weight.n != kKVSize ||
+            weight.k != kHidden || weight.shape[0] != kKVSize || weight.shape[1] != kHidden ||
+            weight.qhigh != nullptr || weight.high_plane_bytes != 0 ||
+            weight.payload_bytes < kCodeBytes + kScaleBytes + sizeof(float) ||
+            !aligned_to(weight.qdata, 16) || !aligned_to(weight.scales, 16) ||
+            weight.scales < weight.qdata ||
+            !std::isfinite(weight.weight_scale_divisor) || weight.weight_scale_divisor <= 0.0F) {
+            throw std::invalid_argument(std::string(kOp) + ": invalid " + name);
+        }
+        return;
+    }
     constexpr std::uint64_t kCodeBytes =
         static_cast<std::uint64_t>(kKVSize) * static_cast<std::uint64_t>(kHidden);
     constexpr std::uint64_t kScaleBytes =
@@ -156,6 +179,11 @@ void context_kv_materialize(
     Tensor key_scratch;
     if (detail::context_kv_materialize_uses_scratch(route))
         key_scratch = allocate_key_scratch(workspace, columns);
+    if (layers.front().key_weight.qtype == QType::NVFP4) {
+        detail::context_kv_materialize_nvfp4_launch(context, positions, counts, state_slots,
+                                                    layers, envelope, route, key_scratch, stream);
+        return;
+    }
     detail::context_kv_materialize_launch(context, positions, counts, state_slots, layers, envelope,
                                           route, key_scratch, stream);
 }

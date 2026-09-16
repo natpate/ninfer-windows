@@ -244,9 +244,18 @@ public:
                 }));
         }
         if (w.selector) {
+            // Codebooks are lookup tables, not activation-bearing projections. Their
+            // representation may be BF16 or NVFP4; the selector owns the A16-only walk.
+            const auto codebook = [&](WeightId id) {
+                const auto& bound = model_.weight(id);
+                return with_context(bound.name, [&] {
+                    return ops::prepare_linear_weight(
+                        {bound.view, ops::LinearPolicy::A16Only, 1.0F});
+                });
+            };
             out.selector = SelectorParameters{linear(w.selector->hidden_projection),
-                                              tensor(w.selector->predecessor_codebook),
-                                              tensor(w.selector->successor_codebook)};
+                                              codebook(w.selector->predecessor_codebook),
+                                              codebook(w.selector->successor_codebook)};
         }
         return out;
     }

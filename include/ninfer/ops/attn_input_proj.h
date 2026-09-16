@@ -85,13 +85,15 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_gate_value_weight,
                      Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream);
 
 /**
- * Three-output Q8 specialization. The Q8_G32_FP16 RowSplit parent stores rows in order
- * [query 4096, key 1024, value 1024]. Registered parent forms are [6144,2048] with BF16
- * x [2048,T] for the Qwen3.6 companion and [6144,5120] with BF16 x [5120,T] for DFlash2.
- * q is contiguous BF16 [4096,T], and k/v are contiguous BF16 [1024,T]. Every route writes the
- * three independent final allocations directly; no parent output or transient workspace is
- * materialized. T may be any positive value. Q and K remain raw projection outputs: this Op does
- * not normalize or rotate either tensor.
+ * Three-output specialization. The parent stores rows in physical order [query, key, value].
+ * Registered parent forms are the Q8_G32_FP16 RowSplit matrices [6144,2048] with BF16 x [2048,T]
+ * for the Qwen3.6 companion, [6144,5120] with BF16 x [5120,T] for DFlash2, and the weight-only
+ * NVFP4 BlockScaleK16M128x4 matrix [6144,5120] with BF16 x [5120,T] for the NVFP4-encoded
+ * DFlash2 module. q is contiguous BF16 [4096,T], and k/v are contiguous BF16 [1024,T]. Every
+ * route writes the three independent final allocations directly; no parent output or transient
+ * workspace is materialized. T may be any positive value (the NVFP4 route serves extents above
+ * its fused small-T family in 32-token chunks). Q and K remain raw projection outputs: this Op
+ * does not normalize or rotate either tensor.
  */
 void attn_input_proj(const Tensor& x, const Weight& query_key_value_weight, Tensor& q, Tensor& k,
                      Tensor& v, cudaStream_t stream);

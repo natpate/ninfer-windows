@@ -27,6 +27,12 @@ void nvfp4_attn_input_w4a4_launch(const Tensor& x, const Weight& weight, Tensor&
                                   Tensor& k, Tensor& v, Nvfp4W4a4Workspace workspace,
                                   cudaStream_t stream);
 
+// Three-output DFlash2 route: the weight-only NVFP4 [6144,5120] parent writing q [4096,T],
+// k [1024,T], and v [1024,T] directly at every positive T (32-token chunks above the small-T
+// family). No transient workspace.
+void nvfp4_dflash2_attn_input(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k,
+                              Tensor& v, cudaStream_t stream);
+
 void nvfp4_attn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
                                Tensor& k, Tensor& v, LinearPolicy policy, WorkspaceArena* workspace,
                                cudaStream_t stream);

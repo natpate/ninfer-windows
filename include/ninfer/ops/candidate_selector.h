@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/tensor.h"
+#include "core/weight.h"
 #include "core/arena.h"
 #include "ninfer/ops/sampling.h"
 
@@ -19,10 +20,12 @@ namespace ninfer::ops {
  *
  * For K in [1,15] and B in [1,8], the inputs are contiguous candidate_ids I32 [16,K,B],
  * unary_scores FP32 [16,K,B], projected_hidden BF16 [256,K,B], anchors I32 [B],
- * predecessor_codebook and successor_codebook BF16 [256,248320], base_positions I32 [B], and a
- * device-resident SamplingConfig[B]. Candidate rank is the fastest axis. The 16 candidate ids in
- * each row are distinct, and all candidate and anchor token ids lie in [0,248077); the registered
- * vocabulary, artifact binding, and linear_topk producer establish that trusted value contract.
+ * predecessor_codebook and successor_codebook weights of logical shape [256,248320] in either
+ * BF16_CTRL Contiguous or weight-only NVFP4 BlockScaleK16M128x4 form, base_positions I32 [B],
+ * and a device-resident SamplingConfig[B]. Candidate rank is the fastest axis. The 16 candidate
+ * ids in each row are distinct, and all candidate and anchor token ids lie in [0,248077); the
+ * registered vocabulary, artifact binding, and linear_topk producer establish that trusted value
+ * contract.
  *
  * Starting with predecessor=anchors[b], each position i in [0,K) computes:
  *
@@ -30,6 +33,10 @@ namespace ninfer::ops {
  *           + sum_r predecessor_codebook[r,predecessor]
  *                   * projected_hidden[r,i,b]
  *                   * successor_codebook[r,candidate_ids[c,i,b]].
+ *
+ * The oracle evaluates that formula in FP64 from the represented (decoded) codebook values; the
+ * NVFP4 production route decodes each gathered row element with its exact stored scale in FP32
+ * before the products.
  *
  * A row with configs[b].temperature<=0 selects the lowest candidate rank attaining max(edge) and
  * writes its exact one-hot distribution. A positive-temperature row writes the FP32 softmax of
@@ -45,7 +52,7 @@ namespace ninfer::ops {
  */
 void candidate_selector_path(const Tensor& candidate_ids, const Tensor& unary_scores,
                              const Tensor& projected_hidden, const Tensor& anchors,
-                             const Tensor& predecessor_codebook, const Tensor& successor_codebook,
+                             const Weight& predecessor_codebook, const Weight& successor_codebook,
                              const Tensor& base_positions, const SamplingConfig* configs,
                              Tensor& drafts, Tensor& proposal_q, WorkspaceArena& workspace,
                              cudaStream_t stream);

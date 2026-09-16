@@ -19,8 +19,8 @@ const char* candidate_selector_path_route_name(int steps, int batch) {
 
 void candidate_selector_path_dispatch(const Tensor& candidate_ids, const Tensor& unary_scores,
                                       const Tensor& projected_hidden, const Tensor& anchors,
-                                      const Tensor& predecessor_codebook,
-                                      const Tensor& successor_codebook,
+                                      const Weight& predecessor_codebook,
+                                      const Weight& successor_codebook,
                                       const Tensor& base_positions, const SamplingConfig* configs,
                                       Tensor& drafts, Tensor& proposal_q, WorkspaceArena& workspace,
                                       cudaStream_t stream) {
@@ -28,16 +28,22 @@ void candidate_selector_path_dispatch(const Tensor& candidate_ids, const Tensor&
     auto scope       = workspace.scope();
     const auto scratch =
         allocate_selector_workspace(workspace, route, candidate_ids.ne[1], candidate_ids.ne[2]);
-    const Tensor* live[]{
-        &candidate_ids,      &unary_scores,   &projected_hidden, &anchors,   &predecessor_codebook,
-        &successor_codebook, &base_positions, &drafts,           &proposal_q};
+    const Tensor tensors[]{
+        candidate_ids, unary_scores, projected_hidden, anchors,
+        base_positions, drafts,       proposal_q,
+    };
     for (const auto* work : {&scratch.edges}) {
         if (!work->data) continue;
         const auto begin = reinterpret_cast<std::uintptr_t>(work->data),
                    end   = begin + work->bytes();
-        for (const auto* tensor : live) {
-            const auto tb = reinterpret_cast<std::uintptr_t>(tensor->data);
-            if (begin < tb + tensor->bytes() && tb < end)
+        for (const auto& tensor : tensors) {
+            const auto tb = reinterpret_cast<std::uintptr_t>(tensor.data);
+            if (begin < tb + tensor.bytes() && tb < end)
+                throw std::invalid_argument("selector workspace overlaps operand");
+        }
+        for (const auto* codebook : {&predecessor_codebook, &successor_codebook}) {
+            const auto cb = reinterpret_cast<std::uintptr_t>(codebook->qdata);
+            if (begin < cb + codebook->payload_bytes && cb < end)
                 throw std::invalid_argument("selector workspace overlaps operand");
         }
         const auto cb = reinterpret_cast<std::uintptr_t>(configs);

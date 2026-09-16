@@ -368,6 +368,9 @@ int run_case(Fixture& fixture, const std::string& label, int width, int batch,
                 counts_device.copy_from_host(next_counts.data(), batch * 4);
                 slots_device.copy_from_host(next_slots.data(), batch * 4);
                 positions_device.copy_from_host(next_positions.data(), columns * 4);
+                // The copies and reset run on the legacy default stream while the executable
+                // launches on a non-blocking stream: order them before the replay.
+                cuda_synchronize();
                 executable.launch(stream);
                 cuda_synchronize(stream);
                 failures +=

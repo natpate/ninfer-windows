@@ -140,14 +140,31 @@ struct Fixture {
     }
 
     void tensors(std::int32_t batch_size, Tensor& ids, Tensor& unary, Tensor& hidden,
-                 Tensor& anchor, Tensor& predecessor, Tensor& successor, Tensor& positions,
+                 Tensor& anchor, Weight& predecessor, Weight& successor, Tensor& positions,
                  Tensor& draft, Tensor& q) {
         ids         = Tensor(candidate_ids.p, DType::I32, {kCandidates, kSteps, batch_size});
         unary       = Tensor(unary_scores.p, DType::FP32, {kCandidates, kSteps, batch_size});
         hidden      = Tensor(projected_hidden.p, DType::BF16, {kRank, kSteps, batch_size});
         anchor      = Tensor(anchors.p, DType::I32, {batch_size});
-        predecessor = Tensor(predecessor_codebook.p, DType::BF16, {kRank, kCodebookRows});
-        successor   = Tensor(successor_codebook.p, DType::BF16, {kRank, kCodebookRows});
+        const auto codebook_weight = [&](void* data) {
+            Weight weight{};
+            weight.payload      = data;
+            weight.payload_bytes =
+                static_cast<std::uint64_t>(kCodebookRows) * kRank * sizeof(std::uint16_t);
+            weight.qtype            = QType::BF16;
+            weight.ndim             = 2;
+            weight.qdata            = data;
+            weight.n                = kCodebookRows;
+            weight.k                = kRank;
+            weight.shape[0]         = kCodebookRows;
+            weight.shape[1]         = kRank;
+            weight.padded_shape[0]  = kCodebookRows;
+            weight.padded_shape[1]  = kRank;
+            weight.layout           = QuantLayout::Contiguous;
+            return weight;
+        };
+        predecessor = codebook_weight(predecessor_codebook.p);
+        successor   = codebook_weight(successor_codebook.p);
         positions   = Tensor(base_positions.p, DType::I32, {batch_size});
         draft       = Tensor(drafts.p, DType::I32, {kSteps, batch_size});
         q           = Tensor(proposal_q.p, DType::FP32, {kCandidates, kSteps, batch_size});
@@ -161,8 +178,8 @@ void run(std::int32_t batch_size, Mode mode, const Options& options, Fixture& fi
     Tensor unary;
     Tensor hidden;
     Tensor anchor;
-    Tensor predecessor;
-    Tensor successor;
+    Weight predecessor;
+    Weight successor;
     Tensor positions;
     Tensor draft;
     Tensor q;

@@ -378,7 +378,8 @@ void propose_dflash2_batch(DFlashBatchContext& state, qwen3_5::DFlashDecodeState
         ops::candidate_selector_path(
             candidates, scores.view({dimension(config.dflash2->selector_top_k), k, batch}),
             projected.view({dimension(config.dflash2->selector_rank), k, batch}), anchors,
-            weights.selector->predecessor_codebook, weights.selector->successor_codebook, frontiers,
+            weights.selector->predecessor_codebook.weight,
+            weights.selector->successor_codebook.weight, frontiers,
             frame.sampling, drafts, proposal_q, work, stream);
         work.reset();
     }
