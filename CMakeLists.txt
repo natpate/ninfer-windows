@@ -43,41 +43,18 @@ if(MSVC)
   # (request_log.cpp, context_cost.cpp, media_acquire) stay in place and are
   # now redundant but harmless.
   add_compile_definitions(NOMINMAX)
-  # cl (host C++) and nvcc: both need the standard-conforming preprocessor
-  # and the /utf-8 execution charset. Plain add_compile_options (the CUDA
-  # CMAKE_CUDA_FLAGS serialization path mangles multi-item host flags in
-  # the CUDA MSBuild target — see the D9002 /EHu-/EHt fragments):
-  #  - CMake maps /Zc:preprocessor onto the dedicated UseStandardPreprocessor
-  #    MSBuild property for ClCompile items;
-  #  - for CudaCompile items the raw /Zc:preprocessor /utf-8 tokens land in
-  #    AdditionalOptions where -forward-unknown-to-host-compiler (already
-  #    part of the CUDA target's options) forwards them to cl.
-  add_compile_options(/Zc:preprocessor /utf-8)
-endif()
-
-if(CMAKE_GENERATOR MATCHES "Ninja")
-  set_property(GLOBAL PROPERTY JOB_POOLS ninfer_link=1)
-  set(CMAKE_JOB_POOL_LINK ninfer_link)
-endif()
-
-# Tests also exercise product input, logging and protocol adapters.
-set(NINFER_BUILD_PRODUCT_SUPPORT OFF)
-if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  set(NINFER_BUILD_PRODUCT_SUPPORT ON)
-endif()
-
-include(cmake/Dependencies.cmake)
-include(cmake/NinferTargets.cmake)
-
-# --- Subdirectories ----------------------------------------------------------
-add_subdirectory(src)
-if(NINFER_BUILD_APPS)
-  add_subdirectory(apps)
-endif()
-if(BUILD_TESTING)
-  enable_testing()
-  add_subdirectory(tests)
-endif()
-if(NINFER_BUILD_BENCHMARKS)
-  add_subdirectory(bench)
+  # NOTE: /Zc:preprocessor (CUDA 13.3 CC/CUB macro corruption fix) and /utf-8
+  # (spdlog fmt requirement) are delivered at build time via the CL
+  # environment variable, not CMake flag variables — every CMake channel
+  # for them is broken or dead under the CUDA 13.3 MSBuild target:
+  #   - CMAKE_CXX_FLAGS / add_compile_options: raw tokens land on the nvcc
+  #     command line, and nvcc treats unknown /-form tokens as input files
+  #     ("single input file is required" fatal).
+  #   - CMAKE_CUDA_FLAGS: items never reach the -Xcompiler value the CUDA
+  #     target builds (dead channel); multi-item lists serialize ';'-joined
+  #     and cl mangles them (D9002).
+  # So: set CL in the build prompt before building:
+  #   set "CL=/Zc:preprocessor /utf-8"
+  # cl.exe (including the host step nvcc spawns) reads CL on every
+  # invocation.
 endif()
