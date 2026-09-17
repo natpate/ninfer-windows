@@ -29,24 +29,22 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(MSVC)
-  # CUDA 13.3's CCCL headers reject MSVC's traditional preprocessor with a
-  # hard #error, and even with the error suppressed their macro state gets
-  # corrupted under it (cub's CUB_NAMESPACE_BEGIN expands empty and the CUB
-  # headers fail to parse). /Zc:preprocessor is the fix CCCL's #error names.
-  # The suppression macro is kept so the #error stays quiet even if the
+  # CUDA 13.3's CCCL headers require the standard-conforming preprocessor
+  # (their macro state is corrupted under the traditional one: cub's
+  # CUB_NAMESPACE_BEGIN expands empty and the CUB headers fail to parse), and
+  # spdlog's bundled fmt hard-asserts a /utf-8 execution charset. The CCCL
+  # suppression macro is kept so its #error stays quiet even if the
   # preprocessor flag is reverted.
   add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
+  # cl (host C++): add the flags directly, scoped so nvcc never sees raw /Zc
+  # or /utf-8 tokens.
   add_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler;/Zc:preprocessor>
-  )
-  # spdlog's bundled fmt defaults to Unicode support on Win32 and hard-asserts
-  # that the code is compiled with /utf-8 (fmt base.h: "Unicode support
-  # requires compiling with /utf-8").
-  add_compile_options(
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler;/utf-8>
   )
+  # nvcc: forward both to its host compiler as separate flag tokens.
+  list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /Zc:preprocessor)
+  list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /utf-8)
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
