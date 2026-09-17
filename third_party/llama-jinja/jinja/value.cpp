@@ -269,7 +269,13 @@ const func_builtins& global_builtins() {
              args.ensure_vals<value_string>();
              std::string format = args.get_pos(0)->as_string().str();
              std::tm local{};
+#ifdef _WIN32
+             // MSVC has no localtime_r; localtime_s takes the arguments in
+             // reverse order and reports failure via its return value.
+             if (localtime_s(&local, &args.ctx.current_time) != 0) {
+#else
              if (!localtime_r(&args.ctx.current_time, &local)) {
+#endif
                  throw raised_exception("strftime_now: invalid time");
              }
              if (format.empty()) return mk_val<value_string>("");
