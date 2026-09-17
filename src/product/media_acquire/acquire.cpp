@@ -1,3 +1,13 @@
+// windows.h (pulled in transitively by the curl/winsock headers on Windows)
+// defines min/max as macros; the standard-conforming preprocessor expands
+// them at std::numeric_limits<...>::max() call sites. Same guard pattern as
+// request_log.cpp / context_cost.cpp.
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 #include "product/media_acquire/acquire.h"
 
 #include <curl/curl.h>
