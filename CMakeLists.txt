@@ -28,6 +28,14 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+if(MSVC)
+  # CUDA 13.3's CCCL headers reject MSVC's traditional preprocessor with a
+  # hard #error. This project has always built on Windows with the traditional
+  # preprocessor, so use CCCL's documented suppression instead of switching
+  # the whole tree to /Zc:preprocessor.
+  add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
+endif()
+
 if(CMAKE_GENERATOR MATCHES "Ninja")
   set_property(GLOBAL PROPERTY JOB_POOLS ninfer_link=1)
   set(CMAKE_JOB_POOL_LINK ninfer_link)
