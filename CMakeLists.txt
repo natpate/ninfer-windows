@@ -16,8 +16,12 @@ project(ninfer LANGUAGES C CXX CUDA)
 
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the NInfer CLI, server and perplexity evaluator" ON)
-option(BUILD_TESTING "Build NInfer tests" OFF)
-option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
+option(BUILD_TESTING "Build the NInfer test suite" OFF)
+option(NINFER_BUILD_BENCHMARKS "Build the NInfer benchmark binaries" OFF)
+# Media acquisition, product logging, prompt input and the HTTP serve stack.
+# Undefined before this: only a -D flag on the configure command line set it,
+# and a cache without it silently dropped the whole product/serve target tree.
+option(NINFER_BUILD_PRODUCT_SUPPORT "Build product support (media, logging, prompt input, serve)" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
