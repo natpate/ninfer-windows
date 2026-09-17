@@ -36,6 +36,13 @@ if(MSVC)
   # suppression macro is kept so its #error stays quiet even if the
   # preprocessor flag is reverted.
   add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
+  # windows.h's min/max macros collide with std::numeric_limits<...>::max()
+  # and std::min/max under the standard-conforming preprocessor (the
+  # traditional PP's post-'::' macro-skip quirk had masked the collision
+  # tree-wide). Define NOMINMAX for every MSVC target; per-file guards
+  # (request_log.cpp, context_cost.cpp, media_acquire) stay in place and are
+  # now redundant but harmless.
+  add_compile_definitions(NOMINMAX)
   # cl (host C++): add the flags directly, scoped so nvcc never sees raw /Zc
   # or /utf-8 tokens.
   add_compile_options(
