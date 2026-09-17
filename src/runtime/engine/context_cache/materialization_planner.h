@@ -5,6 +5,10 @@
 #include "runtime/engine/context_cache/materialization_budget.h"
 #include "runtime/engine/context_cache/resource_search.h"
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -924,9 +928,22 @@ private:
                            ? item.estimated_total_ns - parent.estimated_total_ns
                            : 0;
             };
+            // Exact 128-bit product comparison without overflowing 64 bits.
+            // GCC/Clang have __uint128_t; MSVC x64 does not, so compute the
+            // identical full 128-bit product with _umul128 (hi:lo) and
+            // compare lexicographically. Ordering semantics are preserved.
+#if defined(__SIZEOF_INT128__)
             const __uint128_t left  = static_cast<__uint128_t>(delta(cost)) * b;
             const __uint128_t right = static_cast<__uint128_t>(delta(prior)) * a;
             if (left != right) { return left < right; }
+#else
+            unsigned __int64 left_lo, left_hi, right_lo, right_hi;
+            left_hi  = _umul128(delta(cost), b, &left_lo);
+            right_hi = _umul128(delta(prior), a, &right_lo);
+            if (left_hi != right_hi || left_lo != right_lo) {
+                return left_hi < right_hi || (left_hi == right_hi && left_lo < right_lo);
+            }
+#endif
         }
         return cost.key() < prior.key();
     }
