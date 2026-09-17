@@ -43,25 +43,16 @@ if(MSVC)
   # (request_log.cpp, context_cost.cpp, media_acquire) stay in place and are
   # now redundant but harmless.
   add_compile_definitions(NOMINMAX)
-  # cl (host C++): add the flags directly, scoped so nvcc never sees raw /Zc
-  # or /utf-8 tokens.
-  add_compile_options(
-    $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
-    $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
-  )
-  # nvcc (CUDA language): the CUDA MSBuild target hands its Xcompiler value
-  # to nvcc as a single string, which nvcc passes to cl as a space-separated
-  # flag list. CMake serializes each CMAKE_CUDA_FLAGS list item as a
-  # separate quoted MSBuild property entry, and the target joins them with
-  # ';' — which cl cannot parse (D9002 /EHu-/EHt fragments, flags never
-  # take effect). So under the Visual Studio generator the flags must go in
-  # as ONE space-joined list item; other generators take per-flag
-  # -Xcompiler pairs instead.
-  if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    list(APPEND CMAKE_CUDA_FLAGS "/Zc:preprocessor /utf-8")
-  else()
-    list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /Zc:preprocessor -Xcompiler /utf-8)
-  endif()
+  # cl (host C++) and nvcc: both need the standard-conforming preprocessor
+  # and the /utf-8 execution charset. Plain add_compile_options (the CUDA
+  # CMAKE_CUDA_FLAGS serialization path mangles multi-item host flags in
+  # the CUDA MSBuild target — see the D9002 /EHu-/EHt fragments):
+  #  - CMake maps /Zc:preprocessor onto the dedicated UseStandardPreprocessor
+  #    MSBuild property for ClCompile items;
+  #  - for CudaCompile items the raw /Zc:preprocessor /utf-8 tokens land in
+  #    AdditionalOptions where -forward-unknown-to-host-compiler (already
+  #    part of the CUDA target's options) forwards them to cl.
+  add_compile_options(/Zc:preprocessor /utf-8)
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
