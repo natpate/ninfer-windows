@@ -58,3 +58,19 @@ if(MSVC)
   # cl.exe (including the host step nvcc spawns) reads CL on every
   # invocation.
 endif()
+
+include(cmake/Dependencies.cmake)
+include(cmake/NinferTargets.cmake)
+
+# --- Subdirectories ----------------------------------------------------------
+add_subdirectory(src)
+if(NINFER_BUILD_APPS)
+  add_subdirectory(apps)
+endif()
+if(BUILD_TESTING)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+if(NINFER_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
+endif()
