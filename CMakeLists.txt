@@ -49,11 +49,19 @@ if(MSVC)
     $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
   )
-  # nvcc (CUDA language): the CUDA MSBuild target's Xcompiler property is the
-  # host-flag channel itself, so the flags go in raw — a literal -Xcompiler
-  # token would be passed to cl as a bogus option.
-  list(APPEND CMAKE_CUDA_FLAGS /Zc:preprocessor)
-  list(APPEND CMAKE_CUDA_FLAGS /utf-8)
+  # nvcc (CUDA language): the CUDA MSBuild target hands its Xcompiler value
+  # to nvcc as a single string, which nvcc passes to cl as a space-separated
+  # flag list. CMake serializes each CMAKE_CUDA_FLAGS list item as a
+  # separate quoted MSBuild property entry, and the target joins them with
+  # ';' — which cl cannot parse (D9002 /EHu-/EHt fragments, flags never
+  # take effect). So under the Visual Studio generator the flags must go in
+  # as ONE space-joined list item; other generators take per-flag
+  # -Xcompiler pairs instead.
+  if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    list(APPEND CMAKE_CUDA_FLAGS "/Zc:preprocessor /utf-8")
+  else()
+    list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /Zc:preprocessor -Xcompiler /utf-8)
+  endif()
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
