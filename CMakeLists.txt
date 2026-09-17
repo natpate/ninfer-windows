@@ -42,9 +42,11 @@ if(MSVC)
     $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
   )
-  # nvcc: forward both to its host compiler as separate flag tokens.
-  list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /Zc:preprocessor)
-  list(APPEND CMAKE_CUDA_FLAGS -Xcompiler /utf-8)
+  # nvcc (CUDA language): the CUDA MSBuild target's Xcompiler property is the
+  # host-flag channel itself, so the flags go in raw — a literal -Xcompiler
+  # token would be passed to cl as a bogus option.
+  list(APPEND CMAKE_CUDA_FLAGS /Zc:preprocessor)
+  list(APPEND CMAKE_CUDA_FLAGS /utf-8)
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
