@@ -30,10 +30,16 @@ endif()
 
 if(MSVC)
   # CUDA 13.3's CCCL headers reject MSVC's traditional preprocessor with a
-  # hard #error. This project has always built on Windows with the traditional
-  # preprocessor, so use CCCL's documented suppression instead of switching
-  # the whole tree to /Zc:preprocessor.
+  # hard #error, and even with the error suppressed their macro state gets
+  # corrupted under it (cub's CUB_NAMESPACE_BEGIN expands empty and the CUB
+  # headers fail to parse). /Zc:preprocessor is the fix CCCL's #error names.
+  # The suppression macro is kept so the #error stays quiet even if the
+  # preprocessor flag is reverted.
   add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler;/Zc:preprocessor>
+  )
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
