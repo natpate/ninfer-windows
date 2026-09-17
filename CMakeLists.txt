@@ -40,6 +40,13 @@ if(MSVC)
     $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler;/Zc:preprocessor>
   )
+  # spdlog's bundled fmt defaults to Unicode support on Win32 and hard-asserts
+  # that the code is compiled with /utf-8 (fmt base.h: "Unicode support
+  # requires compiling with /utf-8").
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler;/utf-8>
+  )
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
