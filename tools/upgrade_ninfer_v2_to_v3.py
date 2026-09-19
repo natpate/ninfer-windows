@@ -17,6 +17,13 @@ import struct
 import tempfile
 import uuid
 
+if not hasattr(os, "posix_fadvise"):
+    # Windows: page-cache hints are a POSIX-only facility. The call sites
+    # below stay unchanged; the hint becomes a no-op.
+    os.POSIX_FADV_DONTNEED = 4
+    os.posix_fadvise = lambda *args: None
+    os.fdatasync = lambda fd: None
+
 FORMATS = {
     "BF16": "bf16",
     "FP32": "fp32",
