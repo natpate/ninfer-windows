@@ -15,6 +15,19 @@ import torch
 from tools.artifact.file_io import discard_cached_pages
 from .logical import LogicalSource
 
+if hasattr(os, "pread"):
+    _pread = os.pread
+else:
+
+    def _pread(fd: int, length: int, offset: int) -> bytes:
+        # Windows: no pread. One dedicated fd per source file; lseek +
+        # read (with the offset restored) is equivalent.
+        original = os.lseek(fd, 0, os.SEEK_CUR)
+        os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, length)
+        os.lseek(fd, original, os.SEEK_CUR)
+        return data
+
 _DTYPES = {
     "BF16": (torch.bfloat16, 2),
     "F16": (torch.float16, 2),
@@ -146,7 +159,7 @@ class SafetensorsSource:
         count = (end - begin) * word_bytes
         fd = self._file(info.file)
         offset = info.offset + begin * word_bytes
-        raw = os.pread(fd, count, offset)
+        raw = _pread(fd, count, offset)
         if len(raw) != count:
             raise ValueError(f"{name}: short source read")
         self.bytes_read += count
