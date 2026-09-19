@@ -6,7 +6,15 @@ import os
 
 IO_CHUNK_BYTES = 8 * 1024 * 1024
 WRITEBACK_BYTES = 64 * 1024 * 1024
-_PAGE_BYTES = os.sysconf("SC_PAGE_SIZE")
+if hasattr(os, "sysconf"):
+    _PAGE_BYTES = os.sysconf("SC_PAGE_SIZE")
+else:
+    # Windows: no page-cache advisory facilities; use the native page size
+    # and no-op hints so the flush/discard sites stay unchanged.
+    _PAGE_BYTES = 4096
+    os.POSIX_FADV_DONTNEED = 4
+    os.posix_fadvise = lambda *args: None
+    os.fdatasync = lambda fd: None
 
 
 def discard_cached_pages(fd: int, offset: int = 0, count: int | None = None) -> None:
