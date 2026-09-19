@@ -23,6 +23,20 @@ from .schema import (
 
 READ_CHUNK_BYTES = IO_CHUNK_BYTES
 
+if hasattr(os, "pread"):
+    _pread = os.pread
+else:
+
+    def _pread(fd: int, length: int, offset: int) -> bytes:
+        # Windows: no pread. This class owns a dedicated fd per file and
+        # positions only through pread, so lseek + read (with the offset
+        # restored) is equivalent.
+        original = os.lseek(fd, 0, os.SEEK_CUR)
+        os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, length)
+        os.lseek(fd, original, os.SEEK_CUR)
+        return data
+
 
 class Artifact:
     """Own file handles; opening the entry does not open unused continuation files."""
@@ -35,7 +49,7 @@ class Artifact:
             fd = os.open(self.path, os.O_RDONLY)
             self._fds[0] = fd
             entry_bytes = os.fstat(fd).st_size
-            raw = os.pread(fd, HEADER.size, 0)
+            raw = _pread(fd, HEADER.size, 0)
             if len(raw) != HEADER.size:
                 raise ArtifactError("truncated v3 entry header")
             magic, json_bytes, self.artifact_id = HEADER.unpack(raw)
@@ -44,7 +58,7 @@ class Artifact:
             integer(json_bytes, "json_bytes", positive=True)
             if json_bytes > entry_bytes - HEADER.size:
                 raise ArtifactError("directory JSON exceeds entry file")
-            raw_json = os.pread(fd, json_bytes, HEADER.size)
+            raw_json = _pread(fd, json_bytes, HEADER.size)
             if len(raw_json) != json_bytes:
                 raise ArtifactError("truncated directory JSON")
             self.directory: Directory = decode_directory(
@@ -100,7 +114,7 @@ class Artifact:
         path = self.path.parent / file.path
         fd = os.open(path, os.O_RDONLY)
         try:
-            raw = os.pread(fd, HEADER.size, 0)
+            raw = _pread(fd, HEADER.size, 0)
             if len(raw) != HEADER.size:
                 raise ArtifactError(f"{path}: truncated continuation header")
             magic, actual_index, artifact_id = HEADER.unpack(raw)
@@ -145,7 +159,7 @@ class Artifact:
             file_offset = self.payload_offset if index == 0 else PAYLOAD_ALIGNMENT
             file_offset += offset - self._prefixes[index]
             fd = self._file(index)
-            data = os.pread(fd, count, file_offset)
+            data = _pread(fd, count, file_offset)
             if len(data) != count:
                 raise ArtifactError(
                     f"short read at logical offset {offset}: {len(data)} of {count}"
