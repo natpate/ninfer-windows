@@ -19,6 +19,12 @@ python3 tools/upgrade_ninfer_v2_to_v3.py \
   models/qwen3_8_27b_nvfp4.v3.ninfer
 ```
 
+On Windows (PowerShell), the same command as a one-liner:
+
+```powershell
+python tools\upgrade_ninfer_v2_to_v3.py models\qwen3_8_27b_nvfp4.ninfer models\qwen3_8_27b_nvfp4.v3.ninfer
+```
+
 The output must use a new path. After upgrading, use it directly or rename it to replace the
 original file. Stored weight values and formats are preserved. The upgrade also installs the
 matching template from `tools/chat_templates/`. Published SHA-256 checksums apply only to
