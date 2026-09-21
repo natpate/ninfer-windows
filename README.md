@@ -13,12 +13,12 @@ runtime:
 
 | Model | Weights | NInfer artifact | Size | SHA-256 |
 |---|---|---|---:|---|
-| [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | `groupwise-int` | `qwen3_6_27b.ninfer` | 17,495,365,888 bytes (16.29 GiB) | `7b51600ffd10632b9660f56085efdd9b751d79733ad32036a652234b64bebe7b` |
-| [Qwen3.6-27B NVFP4](https://huggingface.co/neroued/Qwen3.6-27B-nvfp4-NInfer) | `nvfp4` | `qwen3_6_27b_nvfp4.ninfer` | 18,324,064,000 bytes (17.07 GiB) | `bce5f00d066c0f20f1317bf1fdcb458264cf95837c3b1f3fbec163694627893a` |
-| [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | `groupwise-int` | `qwen3_8_27b.ninfer` | 20,437,336,576 bytes (19.03 GiB) | `0634abb07024221de141456cf04a42ab74b18bc38e1b781c6eb2e062a467eec3` |
-| [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | 23,719,496,192 bytes (22.09 GiB) | `552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c` |
-| [Qwen3.8-27B NVFP4F](https://huggingface.co/cometkim/Qwen3.8-27B-nvfp4full-NInfer) | `nvfp4full` | `qwen3_8_27b_nvfp4full.ninfer` | 18,324,059,648 bytes (17.07 GiB) | `2f59cc27d67cb7acba0ba8a0e0881ac89c1db2b267a60119a696fefa12faf4e7` |
-| [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | 22,783,246,080 bytes (21.22 GiB) | `1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2` |
+| [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | `groupwise-int` | `qwen3_6_27b.ninfer` | 17,495,538,688 bytes (16.29 GiB) | `9b610a7d051e7c4dbf89adb604bd269d248b643c8f6c7ef75bdb871af92c6f6b` |
+| [Qwen3.6-27B NVFP4](https://huggingface.co/neroued/Qwen3.6-27B-nvfp4-NInfer) | `nvfp4` | `qwen3_6_27b_nvfp4.ninfer` | 18,324,354,820 bytes (17.07 GiB) | `0448262d15df2ae4fda761540c110bc19e7c3b4f43c0938e4d50474429cda083` |
+| [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | `groupwise-int` | `qwen3_8_27b.ninfer` | 20,437,521,664 bytes (19.03 GiB) | `81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da` |
+| [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | 23,719,715,844 bytes (22.09 GiB) | `74d2c57145e6ff11d1d2faa79594477f9bc903a611af1fb20218189fbbb77d82` |
+| [Qwen3.8-27B NVFP4F](https://huggingface.co/cometkim/Qwen3.8-27B-nvfp4full-NInfer) | `nvfp4full` | `qwen3_8_27b_nvfp4full.ninfer` | 19,407,229,188 bytes (18.07 GiB) | `ac98cd392c84a04b2a21c2f5c3988dece88d20a697ba1de663fb32d5998b8ee9` |
+| [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | 22,790,484,480 bytes (21.23 GiB) | `3e33297645dc33557751be1a3c407a74ed7c00f34909b5d4e8cfdce91b3dbe84` |
 
 Each v3 `.ninfer` artifact carries model configuration, encoded weights, logical bindings and
 frontend resources. Runtime execution uses those facts with the implemented model and Op
@@ -37,7 +37,7 @@ artifacts remain usable for Text, Vision and MTP in the current build, but canno
 DFlash2. See [DFlash2 on Windows](docs/windows.md#dflash2) for launch and validation commands.
 
 Qwen3.6-27B exposes two registered weight profiles (`groupwise-int` and `nvfp4`); Qwen3.8-27B
-exposes three, adding `nvfp4full`. The version-2 artifact identity selects the profile without a
+exposes three, adding `nvfp4full`. The artifact identity selects the profile without a
 separate runtime flag; Qwen3.8 uses target key `qwen3_8_27b` while sharing the 27B execution
 package. The Qwen3.6 `nvfp4` profile uses W4A4 Tensor Core MMA for prefill and A16 NVFP4 kernels
 for decode. The Qwen3.8 `nvfp4` profile preserves its source's mixed allocation: NVFP4 MLP weights
@@ -321,16 +321,16 @@ Transformers checkpoint, Safetensors distribution, or GGUF file.
 
 ## Artifact and startup notes
 
-Current builds require version-3 `.ninfer` containers. The published downloads above are
-version 2; upgrade a local copy with the offline tool (no re-download; stored weight values
-and formats are preserved):
+Current builds require version-3 `.ninfer` containers, and the published downloads above are
+version 3. Existing v2 copies (downloads made before this update) can be upgraded locally with
+the offline tool (no re-download; stored weight values and formats are preserved):
 
 ```bash
 python3 tools/upgrade_ninfer_v2_to_v3.py models/qwen3_6_27b.ninfer \
   models/qwen3_6_27b.v3.ninfer
 ```
 
-Use the same command for any of the six published artifacts, then rename the `.v3.ninfer`
+Use the same command for any existing v2 artifact, then rename the `.v3.ninfer`
 output to replace the original file. See [weight conversion]
 (docs/weight-conversion.md#upgrade-an-existing-v2-artifact) for the tool's full behavior.
 
