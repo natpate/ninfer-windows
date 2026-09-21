@@ -141,7 +141,7 @@ for /f "usebackq delims=" %%l in ("%SHAFILE%") do (
 )
 del "%SHAFILE%" 2>nul
 if not defined ACTUAL_SHA (
-    echo    [warn] Could not compute SHA-256 (certutil failed); skipping integrity check.
+    echo    [warn] Could not compute SHA-256, certutil failed. Skipping the integrity check.
 ) else if /i "%ACTUAL_SHA%"=="%EXP_SHA%" (
     echo    [ok] SHA-256 verified:  %ACTUAL_SHA%
 ) else (
