@@ -425,7 +425,7 @@ struct value_array_t : public value_t {
         }
         if (immutable && val_arr.size() == 1) { ss << ","; }
         ss << (immutable ? ")" : "]");
-        return ss.str();
+        return string(ss.str(), 0, true);
     }
 
     virtual bool as_bool() const override { return !val_arr.empty(); }
@@ -535,7 +535,7 @@ struct value_object_t : public value_t {
             ss << value_to_string_repr(key) << ": " << value_to_string_repr(val);
         }
         ss << "}";
-        return ss.str();
+        return string(ss.str(), 0, true);
     }
 
     virtual bool as_bool() const override { return !unordered.empty(); }

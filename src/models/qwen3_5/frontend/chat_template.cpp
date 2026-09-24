@@ -98,12 +98,28 @@ Json template_parameters(const ChatRenderOptions& options, const Json& special_t
     return context;
 }
 
-std::optional<std::size_t> containing_message(const PromptLayout& layout, ByteSpan region) {
+std::optional<std::size_t> containing_message(const PromptLayout& layout, text::ByteSpan region) {
     for (std::size_t i = 0; i < layout.messages.size(); ++i) {
         const auto& message = layout.messages[i];
         if (region.begin >= message.content_begin && region.end <= message.content_end) return i;
     }
     return std::nullopt;
+}
+
+// Equal text alone does not prove equal control-token interpretation.
+bool same_prefix(const text::TemplateOutput& lhs, const text::TemplateOutput& rhs,
+                 std::size_t size) {
+    if (lhs.text.size() < size || rhs.text.size() < size ||
+        std::string_view(lhs.text).substr(0, size) != std::string_view(rhs.text).substr(0, size))
+        return false;
+    for (std::size_t i = 0;; ++i) {
+        const bool left  = i < lhs.literal_spans.size() && lhs.literal_spans[i].begin < size;
+        const bool right = i < rhs.literal_spans.size() && rhs.literal_spans[i].begin < size;
+        if (!left || !right) return left == right;
+        const auto a = lhs.literal_spans[i];
+        const auto b = rhs.literal_spans[i];
+        if (a.begin != b.begin || std::min(a.end, size) != std::min(b.end, size)) return false;
+    }
 }
 
 bool real_user(const ChatMessage& message) {
@@ -227,9 +243,12 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             tool_tags.push_back(tag("/tools/" + std::to_string(i)));
         }
     }
+    std::vector<std::string> control_variables;
+    for (const auto& item : special_tokens_.items()) control_variables.push_back(item.key());
     text::TemplateRenderOptions execution{
-        .checkpoint = [&] { check_preparation_control(control, "chat template"); },
-        .regions    = regions};
+        .checkpoint        = [&] { check_preparation_control(control, "chat template"); },
+        .regions           = regions,
+        .control_variables = control_variables};
     auto output = compiled_.render(context, execution);
     auto layout = inspect_prompt_layout(output, media);
     if (continuation) {
@@ -246,6 +265,12 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         output.text.resize(content->end);
         std::erase_if(output.regions,
                       [&](const auto& region) { return region.begin > output.text.size(); });
+        for (auto& region : output.regions) region.end = std::min(region.end, output.text.size());
+        std::erase_if(output.literal_spans,
+                      [&](auto span) { return span.begin >= output.text.size(); });
+        if (!output.literal_spans.empty())
+            output.literal_spans.back().end =
+                std::min(output.literal_spans.back().end, output.text.size());
         layout = inspect_prompt_layout(output, media);
     }
     RenderedChat result;
@@ -267,7 +292,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         probe["add_generation_prompt"] = false;
         try {
             const auto rendered = compiled_.render(probe, execution);
-            if (output.text.starts_with(rendered.text)) boundary = rendered.text.size();
+            if (same_prefix(output, rendered, rendered.text.size()))
+                boundary = rendered.text.size();
         } catch (const RequestError&) {
             throw;
         } catch (const std::invalid_argument&) { /* This subset has no independent serialization. */
@@ -279,12 +305,12 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     // Associate actual input regions with complete ChatML blocks. Several tool results may
     // share one user block; their individual closing tags provide the intermediate boundaries.
     std::vector<std::optional<std::size_t>> message_blocks(messages.size());
-    std::vector<std::optional<ByteSpan>> content_regions(messages.size());
+    std::vector<std::optional<text::ByteSpan>> content_regions(messages.size());
     std::vector<std::size_t> block_users(layout.messages.size());
     for (std::size_t i = 0; i < sources.size(); ++i) {
         const auto& origin = sources[i];
-        std::optional<ByteSpan> extent;
-        const auto include = [&](ByteSpan bytes) {
+        std::optional<text::ByteSpan> extent;
+        const auto include = [&](text::ByteSpan bytes) {
             if (!extent)
                 extent = bytes;
             else {
@@ -315,11 +341,9 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             constexpr std::string_view close = "\n</tool_response>";
             const auto pos                   = output.text.find(close, content_regions[i]->end);
             if (pos != std::string::npos && pos + close.size() <= block.content_end) {
-                const auto end     = pos + close.size();
-                const bool sourced = std::any_of(
-                    output.regions.begin(), output.regions.end(), [&](const auto& region) {
-                        return region.begin < end && region.end > content_regions[i]->end;
-                    });
+                const auto end = pos + close.size();
+                const bool sourced =
+                    text::overlaps(output.literal_spans, content_regions[i]->end, end);
                 if (!sourced)
                     result.message_boundaries[i + 1] =
                         end == block.content_end && block.closed ? block.end : end;
@@ -369,8 +393,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         try {
             const auto next_turn     = compiled_.render(probe, probe_options);
             const auto history_bytes = generation_begin.value_or(output.text.size());
-            retain_open_turn =
-                next_turn.text.starts_with(std::string_view(output.text).substr(0, history_bytes));
+            retain_open_turn         = same_prefix(next_turn, output, history_bytes);
         } catch (const RequestError&) { throw; } catch (const std::invalid_argument&) {
             retain_open_turn = false;
         }
@@ -432,7 +455,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             break;
         }
     }
-    result.text = std::move(output.text);
+    result.text          = std::move(output.text);
+    result.literal_spans = std::move(output.literal_spans);
     return result;
 }
 

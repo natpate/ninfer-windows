@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,7 +20,8 @@ bool whitespace(std::int32_t codepoint);
 bool is_upper(std::string_view text);
 bool is_lower(std::string_view text);
 enum class Case { Lower, Upper, Title, Capitalize };
-std::string map_case(std::string_view text, Case mode);
+// Remap ordered input byte boundaries while applying context-sensitive Unicode casing.
+std::string map_case(std::string_view text, Case mode, std::span<std::size_t> boundaries = {});
 
 struct Slice {
     std::int64_t start, stop, step;

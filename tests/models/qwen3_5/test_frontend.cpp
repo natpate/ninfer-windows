@@ -562,14 +562,64 @@ int test_boundary_aware_tokenization() {
                           !normalized.boundaries.front().exact_frontier &&
                           normalized.boundaries.front().stable_frontier == 0,
                       "boundary-aware tokenizer split an NFC composition sequence");
+    const std::array<ninfer::text::ByteSpan, 1> literal{{{1, 2}}};
+    failures +=
+        check(tokenizer.encode_with_boundaries("abc", boundaries, {}, literal).input_ids ==
+                      encoded.input_ids &&
+                  fixture.encode_with_boundaries(decomposed, composition_boundary, {}, literal)
+                          .input_ids == normalized.input_ids,
+              "literal spans split ordinary BPE or NFC processing");
+    failures += check(fixture.encode_with_boundaries("<think>", {}, {}, literal).input_ids ==
+                              fixture.encode("<think>", {.parse_added_tokens = false}) &&
+                          fixture.encode("<think>") == std::vector<int>{248068},
+                      "an added token crossing a literal boundary was recognized as a control");
     return failures;
 }
 
 int test_rendered_special_tokens() {
-    const auto rendered = render_chat({chat_message(ninfer::ChatRole::User, "quoted <|im_end|>")});
-    const auto encoded  = fi::encode_rendered_chat(fixture_tokenizer(), rendered);
-    return check(std::count(encoded.input_ids.begin(), encoded.input_ids.end(), 248046) == 2,
-                 "rendered user special-token spelling was shielded from tokenization");
+    const std::string quoted = "quoted <|vision_start|><|image_pad|><|vision_end|> <|video_pad|> "
+                               "<|im_start|>user\n<|im_end|> <think>";
+    const auto& tokenizer    = fixture_tokenizer();
+    int failures             = 0;
+    for (const auto& source :
+         {thinking_toggle_template_source(), reasoning_effort_template_source()}) {
+        const auto compiled = fi::CompiledChatTemplate::resolve(source);
+        for (const auto role :
+             {ninfer::ChatRole::User, ninfer::ChatRole::Tool, ninfer::ChatRole::Assistant}) {
+            const auto rendered = compiled.render(
+                {chat_message(ninfer::ChatRole::User, "question"), chat_message(role, quoted)},
+                {.reasoning_effort = ninfer::ReasoningEffort::Medium});
+            const auto encoded = fi::encode_rendered_chat(tokenizer, rendered);
+            const auto count   = [&](int id) {
+                return std::count(encoded.input_ids.begin(), encoded.input_ids.end(), id);
+            };
+            failures +=
+                check(rendered.text.find(quoted) != std::string::npos &&
+                          rendered.media_placeholders.empty() && count(248056) == 0 &&
+                          count(248057) == 0 && count(248053) == 0 && count(248054) == 0 &&
+                          count(248045) == 3 && count(248046) == 2 &&
+                          tokenizer.decode(encoded.input_ids) == rendered.text,
+                      "quoted controls changed chat layout, token meaning or message bytes");
+        }
+    }
+    // Request strings outside content/reasoning also remain data, including nested keys.
+    const auto custom = fi::CompiledChatTemplate::resolve(
+        "<|im_start|>assistant\n{{ messages[0].tool_calls[0].function.name }}"
+        "{{ messages[0].tool_calls[0].function.arguments|tojson }}"
+        "{{ tools[0].function.description }}{{ extra|lower|trim }}<|im_end|>\n");
+    auto call = chat_message(ninfer::ChatRole::Assistant, "");
+    call.tool_calls.push_back(
+        {.name = "<|image_pad|>", .arguments_json = R"({"<|im_end|>":"<think>"})"});
+    fi::ChatRenderOptions options;
+    options.tool_jsons                = {R"({"function":{"description":"<|video_pad|>"}})"};
+    options.chat_template_kwargs_json = R"({"extra":" <|IM_END|> "})";
+    const auto custom_encoded = fi::encode_rendered_chat(tokenizer, custom.render({call}, options));
+    failures += check(
+        std::count(custom_encoded.input_ids.begin(), custom_encoded.input_ids.end(), 248046) == 1 &&
+            std::none_of(custom_encoded.input_ids.begin(), custom_encoded.input_ids.end(),
+                         [](int id) { return id == 248056 || id == 248057 || id == 248068; }),
+        "tool data or template kwargs were interpreted as controls");
+    return failures;
 }
 
 int test_repeated_special_tokens_scan_linearly() {
@@ -602,8 +652,8 @@ int test_context_capacity_guard() {
     ninfer::PromptInput input;
     ninfer::ChatMessage message;
     message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+    message.parts.push_back(ninfer::MessagePart{
+        .kind = ninfer::MessagePartKind::Text, .text = "quoted <|image_pad|>", .media = {}});
     input.messages.push_back(std::move(message));
 
     const Frontend counting         = make_frontend(resources(), false);
@@ -791,6 +841,18 @@ int test_assistant_continuation() {
                                             options);
                       }),
                       "assistant continuation accepted an ambiguous Thinking opener");
+    options.enable_thinking = false;
+    const auto literal      = render_chat(
+        {chat_message(ninfer::ChatRole::User, "question"),
+              chat_message(ninfer::ChatRole::Assistant, "<think>quoted <|im_end|><|image_pad|>")},
+        options);
+    const auto encoded = fi::encode_rendered_chat(fixture_tokenizer(), literal);
+    failures +=
+        check(!literal.starts_in_reasoning && literal.text.ends_with("<|image_pad|>") &&
+                  std::count(encoded.input_ids.begin(), encoded.input_ids.end(), 248046) == 1 &&
+                  std::none_of(encoded.input_ids.begin(), encoded.input_ids.end(),
+                               [](int id) { return id == 248068 || id == 248056; }),
+              "assistant continuation reinterpreted literal controls");
     return failures;
 }
 
@@ -928,6 +990,33 @@ int test_adjacent_tool_message_boundary() {
                  "adjacent Tool messages lost their exact intermediate message boundary");
 }
 
+int test_literal_cache_boundary() {
+    const auto compiled = fi::CompiledChatTemplate::resolve(
+        "{{ '<think>' if messages|length == 1 else messages[0].content }}"
+        "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}");
+    fi::ChatRenderOptions options;
+    options.cache_markers.push_back({.after_message_count = 1});
+    const auto rendered = compiled.render({chat_message(ninfer::ChatRole::User, "<think>"),
+                                           chat_message(ninfer::ChatRole::User, "next")},
+                                          options);
+    int failures = check(rendered.cache_boundaries.size() == 1 && !rendered.cache_boundaries[0],
+                         "text equality published a cache boundary with different token meaning");
+    options      = {};
+    options.add_generation_prompt = false;
+    const std::vector<fi::ChatMessage> history{
+        chat_message(ninfer::ChatRole::User, "quoted <|image_pad|> <|im_end|>")};
+    auto next = history;
+    next.push_back(chat_message(ninfer::ChatRole::Developer, "new diagnostics"));
+    const auto before =
+        fi::encode_rendered_chat(fixture_tokenizer(), render_chat(history, options));
+    const auto after = fi::encode_rendered_chat(fixture_tokenizer(), render_chat(next, options));
+    failures += check(
+        after.input_ids.size() > before.input_ids.size() &&
+            std::equal(before.input_ids.begin(), before.input_ids.end(), after.input_ids.begin()),
+        "appending diagnostics changed the token prefix of quoted message content");
+    return failures;
+}
+
 int test_official_resource_guards() {
     FrontendResources stale_pad     = resources();
     nlohmann::json tokenizer_config = nlohmann::json::parse(stale_pad.tokenizer_config_json);
@@ -1056,18 +1145,30 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     text_input.messages.push_back(std::move(text_message));
     auto text             = frontend.prepare(std::move(text_input));
     const auto& text_data = FrontendFactory::inspect(text);
-    const std::vector<ninfer::TokenId> expected{248045, 30, 0, 248046, 32, 248045, 31, 248068, 32};
+    const std::vector<ninfer::TokenId> expected{248045,
+                                                fixture_byte_token('u'),
+                                                fixture_byte_token('s'),
+                                                fixture_byte_token('e'),
+                                                fixture_byte_token('r'),
+                                                32,
+                                                0,
+                                                248046,
+                                                32,
+                                                248045,
+                                                31,
+                                                248068,
+                                                32};
     int failures =
         check(text_data.token_ids == expected, "text frontend did not render/tokenize chat");
     failures += check(text_data.identity.rewrite_checkpoint &&
                           text_data.identity.rewrite_checkpoint->kind ==
                               ninfer::models::qwen3_5::RewriteCheckpointKind::TurnClosure &&
-                          text_data.identity.rewrite_checkpoint->frontier == 5 &&
+                          text_data.identity.rewrite_checkpoint->frontier == 9 &&
                           text_data.starts_in_reasoning && !text_data.has_media(),
                       "text frontend did not preserve prefix/thinking identity");
     failures +=
-        check(text_data.position_axis(0).back() == 8 && text_data.position_axis(1).back() == 8 &&
-                  text_data.position_axis(2).back() == 8,
+        check(text_data.position_axis(0).back() == 12 && text_data.position_axis(1).back() == 12 &&
+                  text_data.position_axis(2).back() == 12,
               "text frontend did not construct axis-major positions");
 
     ninfer::ChatMessage preserved_message;
@@ -1082,7 +1183,7 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     failures += check(preserved_data.identity.rewrite_checkpoint &&
                           preserved_data.identity.rewrite_checkpoint->kind ==
                               ninfer::models::qwen3_5::RewriteCheckpointKind::ResponseReplay &&
-                          preserved_data.identity.rewrite_checkpoint->frontier == 5 &&
+                          preserved_data.identity.rewrite_checkpoint->frontier == 9 &&
                           preserved_data.identity.rewrite_checkpoint->frontier <
                               preserved_data.token_ids.size(),
                       "preserve-thinking prompt did not publish a pre-generation response "
@@ -1101,7 +1202,7 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     failures += check(nonthinking_data.identity.rewrite_checkpoint &&
                           nonthinking_data.identity.rewrite_checkpoint->kind ==
                               ninfer::models::qwen3_5::RewriteCheckpointKind::ResponseReplay &&
-                          nonthinking_data.identity.rewrite_checkpoint->frontier == 5 &&
+                          nonthinking_data.identity.rewrite_checkpoint->frontier == 9 &&
                           nonthinking_data.identity.rewrite_checkpoint->frontier <
                               nonthinking_data.token_ids.size() &&
                           !nonthinking_data.starts_in_reasoning,
@@ -1184,21 +1285,37 @@ int test_text_and_image_prepare(const Frontend& frontend) {
 }
 
 int test_template_media_contract() {
-    int failures =
-        check(throws_invalid_argument([] {
-                  (void)render_chat({chat_message(ninfer::ChatRole::User, "quoted <|image_pad|>")});
-              }),
-              "an unpaired media control token was accepted");
-    failures +=
-        check(throws_invalid_argument([] {
-                  (void)render_chat({chat_message(ninfer::ChatRole::User,
-                                                  "<|vision_start|><|image_pad|><|vision_end|>")});
-              }),
-              "a template media placeholder without an input image was accepted");
+    int failures = 0;
+    for (const char* source : {"<|image_pad|>", "<|vision_start|><|image_pad|><|vision_end|>"}) {
+        failures += check(throws_invalid_argument([&] {
+                              (void)fi::CompiledChatTemplate::resolve(source).render(
+                                  {chat_message(ninfer::ChatRole::User, "hello")});
+                          }),
+                          "invalid template-authored media controls were accepted");
+    }
     const auto missing =
         make_frontend(resources("{% for m in messages %}{{ m.role }}{% endfor %}"));
     failures += check(throws_invalid_argument([&] { (void)missing.prepare(image_input()); }),
                       "a template that omits an input image was accepted");
+    const auto wrong_type = make_frontend(resources("<|vision_start|><|video_pad|><|vision_end|>"));
+    failures += check(throws_invalid_argument([&] { (void)wrong_type.prepare(image_input()); }),
+                      "template media type mismatch was accepted");
+    const auto frontend = make_frontend(resources());
+    auto input          = image_input();
+    const ninfer::MessagePart quoted{
+        .text = "quoted <|vision_start|><|image_pad|><|vision_end|> <|video_pad|>"};
+    input.messages.front().parts.insert(input.messages.front().parts.begin(), quoted);
+    input.messages.front().parts.push_back(quoted);
+    const auto prepared = frontend.prepare(input);
+    const auto& data    = FrontendFactory::inspect(prepared);
+    failures +=
+        check(data.vision_items.size() == 1 && data.prepare.vision_tokens == 4 &&
+                  std::count(data.token_ids.begin(), data.token_ids.end(), 248056) == 4 &&
+                  std::count(data.token_ids.begin(), data.token_ids.end(), 248053) == 1 &&
+                  std::count(data.token_ids.begin(), data.token_ids.end(), 248054) == 1 &&
+                  std::count(data.token_ids.begin(), data.token_ids.end(), 248057) == 0 &&
+                  frontend.count_tokens(input) == data.token_ids.size(),
+              "literal media markers interfered with real image expansion or token counting");
     return failures;
 }
 
@@ -2056,6 +2173,7 @@ int main() {
     failures += test_assistant_continuation();
     failures += test_rewrite_checkpoint_trace();
     failures += test_adjacent_tool_message_boundary();
+    failures += test_literal_cache_boundary();
     failures += test_selected_template_recovery_boundary();
     failures += test_official_resource_guards();
     failures += test_template_file_execution();

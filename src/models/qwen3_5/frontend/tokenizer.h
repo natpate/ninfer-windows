@@ -1,5 +1,7 @@
 #pragma once
 
+#include "text/byte_span.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -16,11 +18,6 @@ namespace ninfer::models::qwen3_5::frontend {
 struct EncodeOptions {
     bool parse_added_tokens = true;
     std::size_t max_tokens  = std::numeric_limits<std::size_t>::max();
-};
-
-struct ByteSpan {
-    std::size_t begin = 0;
-    std::size_t end   = 0;
 };
 
 struct DecodeOptions {
@@ -135,9 +132,11 @@ public:
     explicit Tokenizer(TokenizerResources resources);
 
     std::vector<int> encode(std::string_view text, EncodeOptions options = {}) const;
-    BoundaryEncodedText encode_with_boundaries(std::string_view text,
-                                               std::span<const std::size_t> byte_boundaries,
-                                               EncodeOptions options = {}) const;
+    // Literal spans suppress added-token recognition without splitting ordinary NFC/BPE runs.
+    BoundaryEncodedText
+    encode_with_boundaries(std::string_view text, std::span<const std::size_t> byte_boundaries,
+                           EncodeOptions options                         = {},
+                           std::span<const text::ByteSpan> literal_spans = {}) const;
     std::string decode(std::span<const int> ids, DecodeOptions options = {}) const;
     [[nodiscard]] DecodedTokenView decoded_token(int id) const;
     [[nodiscard]] std::string_view decode_token_bytes(int id,

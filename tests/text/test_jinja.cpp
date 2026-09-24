@@ -134,6 +134,90 @@ int origins_and_requests() {
                       "time snapshot was not reused");
     return failures;
 }
+
+int literal_content() {
+    struct Example {
+        const char* source;
+        Json context;
+        const char* expected;
+    };
+
+    const Example cases[]{
+        {"{{ data|lower|trim }}", {{"data", " <|IMAGE_PAD|> "}}, "<|image_pad|>"},
+        {"{{ data[1:-1][::-1][::-1] }}", {{"data", "x<|image_pad|>x"}}, "<|image_pad|>"},
+        {"{{ data.split('|x|')|join('') }}", {{"data", "<|image|x|_pad|>"}}, "<|image_pad|>"},
+        {"{{ data|replace('x', '') }}", {{"data", "<|image_xpad|>"}}, "<|image_pad|>"},
+        {"{{ data.format('') }}", {{"data", "<|image_{}pad|>"}}, "<|image_pad|>"},
+        {"{{ '{}'.format(data) }}", {{"data", "<|image_pad|>"}}, "<|image_pad|>"},
+        {"{{ data|indent(2, true)|trim|safe }}", {{"data", "<|image_pad|>"}}, "<|image_pad|>"},
+        {"{{ data|indent(2) }}", {{"data", "\n<|image_pad|>\n"}}, "\n  <|image_pad|>\n"},
+        {"{% macro show(x) %}{{ x }}{% endmacro %}{% set ns=namespace(x=show(data)) %}{{ ns.x }}",
+         {{"data", "<|image_pad|>"}},
+         "<|image_pad|>"},
+        {"{% set captured %}{{ data }}{% endset %}{{ captured }}",
+         {{"data", "<|image_pad|>"}},
+         "<|image_pad|>"},
+        {"{{ data*2 }}", {{"data", "<|image_pad|>"}}, "<|image_pad|><|image_pad|>"},
+        {"{{ data|tojson }}",
+         {{"data", {{"<|image_pad|>", "<|image_pad|>"}}}},
+         "{\"<|image_pad|>\": \"<|image_pad|>\"}"},
+        {"{{ data|string }}", {{"data", Json::array({"<|image_pad|>"})}}, "['<|image_pad|>']"},
+        {"{% for k, v in data.items() %}{{ k }}{{ v }}{% endfor %}",
+         {{"data", {{"<|image_pad|>", "<|image_pad|>"}}}},
+         "<|image_pad|><|image_pad|>"},
+        {"{{ data|upper|lower }}", {{"data", "ß<|IMAGE_PAD|>İ"}}, "ss<|image_pad|>i̇"},
+    };
+    int failures                     = 0;
+    constexpr std::string_view start = "<|im_start|>", end = "<|im_end|>", pad = "<|image_pad|>";
+    for (const auto& item : cases) {
+        const auto output =
+            JinjaTemplate(std::string(start) + item.source + std::string(end), "literal-content")
+                .render(item.context);
+        if (output.text != std::string(start) + item.expected + std::string(end)) {
+            std::cerr << "literal-content text mismatch: " << item.source << '\n';
+            ++failures;
+        }
+        failures +=
+            check(!ninfer::text::overlaps(output.literal_spans, 0, start.size()) &&
+                      !ninfer::text::overlaps(output.literal_spans, output.text.size() - end.size(),
+                                              output.text.size()),
+                  "input content shielded surrounding template controls");
+        for (auto pos = output.text.find(pad); pos != std::string::npos;
+             pos      = output.text.find(pad, pos + pad.size())) {
+            if (!ninfer::text::overlaps(output.literal_spans, pos, pos + pad.size())) {
+                std::cerr << "literal-content marker lost through: " << item.source << '\n';
+                ++failures;
+            }
+        }
+    }
+    const auto mixed =
+        JinjaTemplate("{{ ('<|IM_START|>' ~ data ~ '<|IM_END|>')|lower }}", "mixed-case")
+            .render({{"data", "ß<|IMAGE_PAD|>İ"}});
+    failures +=
+        check(mixed.text == "<|im_start|>ß<|image_pad|>i̇<|im_end|>" &&
+                  mixed.literal_spans.size() == 1 && mixed.literal_spans[0].begin == start.size() &&
+                  mixed.literal_spans[0].end == mixed.text.size() - end.size(),
+              "mixed Unicode case conversion lost content/control boundaries");
+    const auto sigma =
+        JinjaTemplate("{{ ('Ο' ~ data)|lower }}", "mixed-sigma").render({{"data", "Σ"}});
+    failures += check(sigma.text == "ος" && sigma.literal_spans.size() == 1 &&
+                          sigma.literal_spans[0].begin == 2 && sigma.literal_spans[0].end == 4,
+                      "case conversion lost context across content/control boundaries");
+    const auto explicit_control =
+        JinjaTemplate("{{ data.replace('x', '<|image_pad|>') }}", "replace")
+            .render({{"data", "x"}});
+    failures += check(explicit_control.text == pad && explicit_control.literal_spans.empty(),
+                      "template-authored replacement lost its control meaning");
+    const std::vector<std::string> tokens{"bos_token"};
+    const auto variables = JinjaTemplate("{{ bos_token }}{{ data }}", "token-variable")
+                               .render({{"bos_token", "<|im_start|>"}, {"data", "<|im_start|>"}},
+                                       {.control_variables = tokens});
+    failures +=
+        check(!ninfer::text::overlaps(variables.literal_spans, 0, start.size()) &&
+                  ninfer::text::overlaps(variables.literal_spans, start.size(), 2 * start.size()),
+              "engine token variables and ordinary kwargs were not distinguished");
+    return failures;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -155,7 +239,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     try {
-        return language_semantics() + origins_and_requests() == 0 ? 0 : 1;
+        return language_semantics() + origins_and_requests() + literal_content() == 0 ? 0 : 1;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

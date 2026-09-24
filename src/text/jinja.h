@@ -1,5 +1,7 @@
 #pragma once
 
+#include "text/byte_span.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -31,10 +33,14 @@ struct TemplateRenderOptions {
     std::time_t timestamp = std::time(nullptr);
     std::function<void()> checkpoint;
     std::span<const TemplateInputRegion> regions;
+    // Only engine-supplied token variables opt out of ordinary input-string handling.
+    std::span<const std::string> control_variables;
 };
 
 struct TemplateOutput {
     std::string text;
+    // Ordinary content, independent of optional source-coordinate collection.
+    std::vector<ByteSpan> literal_spans;
     std::vector<TemplateOutputRegion> regions;
 };
 

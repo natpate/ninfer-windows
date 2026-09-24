@@ -5,6 +5,8 @@ Anthropic-compatible HTTP endpoints over one resident NInfer Engine.
 
 ## Start the server
 
+See [CUDA synchronization](cli.md#cuda-synchronization) for the shared `NINFER_CUDA_SYNC` setting.
+
 ```bash
 ./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 \
@@ -190,6 +192,9 @@ does not match the model-held endpoint and can reuse only an earlier exact check
 
 `--chat-template FILE` selects a local Jinja template; by default, the server uses the template
 stored in the artifact. See the [CLI guide](cli.md#text-input) for an example.
+
+Control-token spellings quoted in message content, tool data or ordinary template kwargs are
+encoded as text. Media placeholders come from the template and bind to actual image/video inputs.
 
 `chat_template_kwargs` passes a JSON object to the template in Chat Completions, Responses and
 Anthropic Messages. Values duplicated in typed request fields must agree. Null standard options

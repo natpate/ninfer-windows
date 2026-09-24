@@ -37,8 +37,20 @@ int q4_a16_conformance() {
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
                           {1024, 5120, 101U, Comparison::Sampled, false, kN1024K5120Bulk});
 
+    // Full-output oracle covers every mechanism this geometry selects, the capacity tails, and the
+    // column-tile boundaries the selector switches on.
+    constexpr std::array kN4096K5120Full{
+        a16(1),  graph(4),  graph(8),  graph(13), graph(16), graph(17), graph(24),
+        graph(25), graph(32), graph(33), graph(48), graph(64), graph(65), graph(128),
+    };
+    failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
+                          {4096, 5120, 103U, Comparison::Full, true, kN4096K5120Full});
+
     constexpr std::array kN4096K5120{
-        a16(1), a16(2), a16(3), a16(4), a16(5), a16(6), a16(8), a16(16), a16(17), a16(18), a16(128),
+        a16(2),  a16(3),      a16(5),   a16(6),      a16(7),   a16(9),     a16(12),   a16(15),
+        a16(20), a16(23),     a16(28),  a16(31),     a16(40),  a16(56),    a16(63),   a16(72),
+        a16(96), graph(97),   a16(112), graph(192),  a16(289), a16(320),   graph(321), a16(511),
+        graph(512), a16(513), a16(1023), graph(1024),
     };
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
                           {4096, 5120, 103U, Comparison::Sampled, false, kN4096K5120});
@@ -77,15 +89,49 @@ int q4_a16_conformance() {
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
                           {5120, 6144, 149U, Comparison::Sampled, false, kN5120K6144});
 
+    // Full-output oracle covers every mechanism this geometry selects and both sides of every
+    // switch boundary in the token extent.
+    constexpr std::array kN7168K5120Full{
+        a16(1),     graph(4),  graph(8),  graph(9),   graph(16),  graph(17),  graph(24),  graph(25),
+        graph(64),  graph(65), graph(96), graph(97),  graph(112), graph(113), graph(128),
+    };
+    failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
+                          {7168, 5120, 109U, Comparison::Full, true, kN7168K5120Full});
+
     constexpr std::array kN7168K5120{
-        a16(1),  a16(2),  a16(3),  a16(4),  a16(7),  a16(8),  a16(9),
-        a16(10), a16(12), a16(15), a16(16), a16(17), a16(18), a16(128),
+        a16(2),     a16(3),     a16(5),     a16(6),     a16(7),     a16(10),    a16(12),
+        a16(15),    a16(18),    a16(20),    a16(23),    a16(26),    a16(32),    a16(33),
+        a16(48),    a16(56),    a16(72),    a16(80),    a16(129),   graph(192), a16(193),
+        a16(288),   graph(289), a16(320),   a16(321),   a16(384),   graph(385), a16(448),
+        a16(449),   a16(511),   graph(512), a16(513),   a16(576),   graph(577), a16(640),
+        a16(832),   graph(1024), a16(1025), a16(2048),
     };
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
                           {7168, 5120, 109U, Comparison::Sampled, false, kN7168K5120});
 
+    // Full-output oracle covers every arithmetic mechanism this geometry selects, the capacity
+    // tails, the non-full column tiles and both sides of every switch boundary up to the widest
+    // routes. Above T = 128 the same mechanisms are re-used across column tiles, so the sampled
+    // set carries those extents.
+    constexpr std::array kN34816K5120Full{
+        a16(1),     a16(2),    graph(4),  a16(5),     a16(8),     graph(9),   a16(16),
+        graph(17),  a16(24),   graph(25), a16(32),    a16(33),    graph(48),  a16(49),
+        a16(56),    graph(57), graph(64), a16(65),    a16(80),    a16(96),    a16(120),
+        a16(128),
+    };
+    failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
+                          {34816, 5120, 113U, Comparison::Full, true, kN34816K5120Full});
+
     constexpr std::array kN34816K5120{
-        a16(1), a16(2), a16(3), a16(4), a16(5), a16(6), a16(8), a16(16), a16(17), a16(18), a16(128),
+        a16(3),   a16(6),     a16(7),     a16(12),    a16(15),   a16(18),    a16(22),
+        a16(23),  a16(26),    a16(31),    a16(34),    a16(40),   a16(47),    a16(52),
+        a16(55),  a16(60),    a16(63),    a16(72),    a16(79),   a16(81),    a16(88),
+        a16(95),  graph(97),  a16(104),   a16(112),   a16(113),  a16(119),   graph(121),
+        a16(127), graph(129), a16(130),   a16(161),   a16(191),  graph(192), a16(193),
+        a16(200), a16(224),   a16(225),   a16(239),   a16(240),  a16(241),   a16(248),
+        a16(255), a16(256),   a16(257),   a16(272),   a16(287),  graph(288), a16(289),
+        a16(320), a16(384),   a16(511),   graph(512), a16(513),  a16(640),   a16(1023),
+        graph(1024), a16(1025), a16(2048),
     };
     failures += run_shape("Q4_A16", ActivationCompute::A16, make_q4_g64_fp16_weight,
                           {34816, 5120, 113U, Comparison::Sampled, false, kN34816K5120});

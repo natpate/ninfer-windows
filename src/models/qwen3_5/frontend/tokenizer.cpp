@@ -839,9 +839,16 @@ std::vector<int> Tokenizer::encode(std::string_view text, EncodeOptions options)
     return std::move(encoded.input_ids);
 }
 
-BoundaryEncodedText Tokenizer::encode_with_boundaries(std::string_view text,
-                                                      std::span<const std::size_t> byte_boundaries,
-                                                      EncodeOptions options) const {
+BoundaryEncodedText Tokenizer::encode_with_boundaries(
+    std::string_view text, std::span<const std::size_t> byte_boundaries, EncodeOptions options,
+    std::span<const text::ByteSpan> literal_spans) const {
+    std::size_t previous_end = 0;
+    for (const auto span : literal_spans) {
+        if (span.begin < previous_end || span.begin >= span.end || span.end > text.size())
+            throw std::invalid_argument(
+                "Tokenizer literal spans must be ordered disjoint input ranges");
+        previous_end = span.end;
+    }
     BoundaryEncodedText encoded;
     encoded.boundaries.resize(byte_boundaries.size());
     std::vector<IndexedByteBoundary> boundaries;
@@ -887,7 +894,8 @@ BoundaryEncodedText Tokenizer::encode_with_boundaries(std::string_view text,
         for (const std::size_t index : candidates) {
             const AddedToken& token = added_tokens_[index];
             if (token.content.size() <= text.size() - pos &&
-                text.compare(pos, token.content.size(), token.content) == 0) {
+                text.compare(pos, token.content.size(), token.content) == 0 &&
+                !text::overlaps(literal_spans, pos, pos + token.content.size())) {
                 match_token = &token;
                 break;
             }

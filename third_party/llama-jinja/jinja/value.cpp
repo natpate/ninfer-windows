@@ -150,11 +150,14 @@ static value tojson(const func_args& args) {
     std::string key_sep  = separators.size() > 1 ? separators[1]->as_string().str() : ": ";
     std::string json_str = value_to_json(args.get_pos(0), indent, item_sep, key_sep, ensure_ascii,
                                          val_sort->as_bool());
-    auto result          = mk_val<value_string>(json_str);
+    // Serialization produces data, including nested keys and values.
+    auto result = mk_val<value_string>(string(json_str, 0, true));
     if (args.get_pos(0)->origin)
         result->val_str.tag(args.get_pos(0)->origin, false);
-    else if (is_val<value_string>(args.get_pos(0)))
-        result->val_str = args.get_pos(0)->val_str.transformed(json_str);
+    else if (is_val<value_string>(args.get_pos(0))) {
+        const auto& parts = args.get_pos(0)->val_str.parts;
+        if (parts.size() == 1) result->val_str.tag(parts.front().origin, false);
+    }
     return result;
 }
 
@@ -285,7 +288,7 @@ const func_builtins& global_builtins() {
                      std::strftime(buffer.data(), buffer.size(), format.c_str(), &local);
                  if (size) {
                      buffer.resize(size);
-                     return mk_val<value_string>(buffer);
+                     return mk_val<value_string>(string(buffer, 0, true));
                  }
              }
              throw raised_exception("strftime_now: failed to format time");
@@ -647,31 +650,19 @@ const func_builtins& value_string_t::get_builtins() const {
 
              const std::string str = fmt.str();
              jinja::string result;
-             std::string literal;
-             auto flush_literal = [&]() {
-                 if (!literal.empty()) {
-                     result.append(string(literal));
-                     literal.clear();
-                 }
-             };
-
+             size_t begin   = 0;
              size_t arg_idx = 1; // positional args follow the format string
              for (size_t i = 0; i < str.size(); ++i) {
-                 if (str[i] != '{') {
-                     literal += str[i];
-                     continue;
-                 }
+                 if (str[i] != '{') continue;
                  if (i + 1 >= str.size() || str[i + 1] != '}') {
                      throw not_implemented_exception(
                          "format() only supports simple '{}' placeholders");
                  }
-                 ++i;
-                 flush_literal();
-                 const jinja::string arg_str = args.get_pos(arg_idx++)->as_string();
-                 result.parts.insert(result.parts.end(), arg_str.parts.begin(),
-                                     arg_str.parts.end());
+                 result.append(fmt.cut_bytes(begin, i));
+                 result.append(args.get_pos(arg_idx++)->as_string());
+                 begin = ++i + 1;
              }
-             flush_literal();
+             result.append(fmt.cut_bytes(begin, str.size()));
              return mk_val<value_string>(result);
          }},
         {"int",
@@ -732,31 +723,27 @@ const func_builtins& value_string_t::get_builtins() const {
              if (!is_val<value_string>(val_input)) {
                  throw raised_exception("indent() first argument must be a string");
              }
-             std::string indent;
+             jinja::string indent;
              if (is_val<value_int>(val_width)) {
-                 indent.assign(val_width->as_int(), ' ');
+                 indent = string(std::string(val_width->as_int(), ' '));
              } else if (is_val<value_string>(val_width)) {
-                 indent = val_width->as_string().str();
+                 indent = val_width->as_string();
              } else {
-                 indent = "    ";
+                 indent = string("    ");
              }
-             std::string indented;
-             std::string input      = val_input->as_string().str();
-             std::istringstream iss = std::istringstream(input);
-             std::string line;
-             while (std::getline(iss, line)) {
-                 if (!indented.empty()) { indented.push_back('\n'); }
-                 if ((indented.empty() ? first : (!line.empty() || blank))) { indented += indent; }
-                 indented += line;
+             jinja::string result;
+             const auto source = val_input->as_string();
+             const auto input  = source.str();
+             for (size_t begin = 0; begin < input.size();) {
+                 const auto newline = input.find('\n', begin);
+                 const auto end     = newline == std::string::npos ? input.size() : newline;
+                 if (begin == 0 ? first : (begin != end || blank)) result.append(indent);
+                 const auto next = newline == std::string::npos ? end : end + 1;
+                 result.append(source.cut_bytes(begin, next));
+                 begin = next;
              }
-             if (!input.empty() && input.back() == '\n') {
-                 indented.push_back('\n');
-                 if (blank) { indented += indent; }
-             }
-
-             auto res     = mk_val<value_string>(indented);
-             res->val_str = val_input->as_string().transformed(indented);
-             return res;
+             if (!input.empty() && input.back() == '\n' && blank) result.append(indent);
+             return mk_val<value_string>(result);
          }},
         {"join", string_join_not_implemented},
     };
@@ -844,9 +831,8 @@ const func_builtins& value_array_t::get_builtins() const {
                  throw raised_exception("join() attribute must be string or integer");
              }
              const int64_t attr_int = attr_is_int ? attribute->as_int() : 0;
-             const std::string delim =
-                 val_delim->is_undefined() ? "" : val_delim->as_string().str();
-             std::string result;
+             const auto delim       = val_delim->is_undefined() ? string() : val_delim->as_string();
+             jinja::string result;
              for (size_t i = 0; i < arr.size(); ++i) {
                  value val_arr = arr[i];
                  if (!attribute->is_undefined()) {
@@ -860,8 +846,8 @@ const func_builtins& value_array_t::get_builtins() const {
                      !is_val<value_float>(val_arr)) {
                      throw raised_exception("join() can only join arrays of strings or numerics");
                  }
-                 result += val_arr->as_string().str();
-                 if (i < arr.size() - 1) { result += delim; }
+                 result.append(val_arr->as_string());
+                 if (i < arr.size() - 1) result.append(delim);
              }
              return mk_val<value_string>(result);
          }},

@@ -167,7 +167,10 @@ int run_q4_q5() {
     for (int t : {129, 144, 145, 160, 161, 192, 193, 256, 257, 1024})
         failures +=
             run_target_projection_case(query_key, &gate_value, t, ops::LinearPolicy::A16Only);
-    for (int t : {1, 8, 12, 13, 16, 32, 63, 64, 65, 96, 104, 105, 127, 128, 129, 192, 193})
+    // The replayed set covers the Q5 split4 band's new counts (7 and 9) next to the ones already
+    // there, so the instances this change re-routes are replayed with a re-poisoned output and a
+    // changed activation at the captured address.
+    for (int t : {1, 7, 8, 9, 12, 13, 16, 32, 63, 64, 65, 96, 104, 105, 127, 128, 129, 192, 193})
         failures +=
             run_target_projection_case(query_key, &gate_value, t, ops::LinearPolicy::A16Only, true);
     return failures;
@@ -312,7 +315,7 @@ int run_bf16_target() {
         std::cerr << "BF16 attention input workspace interval is not zero-capacity\n";
         ++failures;
     }
-    for (const std::int32_t tokens : {1, 2, 4, 8, 16, 17, 22, 23, 32, 33, 128, 129, 1024}) {
+    for (const std::int32_t tokens : {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 22, 23, 32, 33, 128, 129, 1024}) {
         failures += run_bf16_target_case(parent, tokens);
     }
     return failures;
@@ -406,7 +409,12 @@ int run_nvfp4_target() {
     failures += run_nvfp4_target_case(parent, 4, ops::LinearPolicy::AllowA8, true);
     failures += run_nvfp4_target_case(parent, 4, ops::LinearPolicy::AllowA4);
     failures += run_nvfp4_target_case(parent, 17, ops::LinearPolicy::AllowA4);
+    // 1023, 1024 and 1025 straddle this route's floor. 1024 was the narrowest width it
+    // took before; 1025 is the first ragged one it takes now, and its last M tile holds a
+    // single real token, which is the emptiest grid this route ever runs.
+    failures += run_nvfp4_target_case(parent, 1023, ops::LinearPolicy::AllowA4);
     failures += run_nvfp4_target_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    failures += run_nvfp4_target_case(parent, 1025, ops::LinearPolicy::AllowA4);
     return failures;
 }
 

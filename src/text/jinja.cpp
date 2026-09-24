@@ -4,6 +4,7 @@
 
 #include <jinja/parser.h>
 
+#include <algorithm>
 #include <exception>
 #include <stdexcept>
 #include <unordered_map>
@@ -23,7 +24,7 @@ std::string pointer_component(std::string value) {
 }
 
 jinja::value convert(const nlohmann::ordered_json& input, const std::string& pointer,
-                     const std::unordered_map<std::string, std::uint32_t>& tags) {
+                     const std::unordered_map<std::string, std::uint32_t>& tags, bool literal) {
     using namespace jinja;
     value result;
     if (input.is_null())
@@ -39,19 +40,19 @@ jinja::value convert(const nlohmann::ordered_json& input, const std::string& poi
     } else if (input.is_number_integer())
         result = mk_val<value_int>(input.get<std::int64_t>());
     else if (input.is_string())
-        result = mk_val<value_string>(input.get<std::string>());
+        result = mk_val<value_string>(string(input.get<std::string>(), 0, literal));
     else if (input.is_array()) {
         auto array = mk_val<value_array>();
         for (std::size_t i = 0; i < input.size(); ++i) {
-            array->push_back(convert(input[i], pointer + "/" + std::to_string(i), tags));
+            array->push_back(convert(input[i], pointer + "/" + std::to_string(i), tags, literal));
         }
         result = std::move(array);
     } else if (input.is_object()) {
         auto object = mk_val<value_object>();
         for (const auto& item : input.items()) {
-            object->insert(
-                item.key(),
-                convert(item.value(), pointer + "/" + pointer_component(item.key()), tags));
+            object->insert(mk_val<value_string>(string(item.key(), 0, literal)),
+                           convert(item.value(), pointer + "/" + pointer_component(item.key()),
+                                   tags, literal));
         }
         result = std::move(object);
     } else
@@ -105,8 +106,11 @@ TemplateOutput JinjaTemplate::render(const nlohmann::ordered_json& input,
         std::unordered_map<std::string, std::uint32_t> tags;
         for (const auto& region : options.regions) tags.emplace(region.pointer, region.tag);
         for (const auto& item : input.items()) {
-            context.set_val(item.key(),
-                            convert(item.value(), "/" + pointer_component(item.key()), tags));
+            const bool literal =
+                std::find(options.control_variables.begin(), options.control_variables.end(),
+                          item.key()) == options.control_variables.end();
+            context.set_val(item.key(), convert(item.value(), "/" + pointer_component(item.key()),
+                                                tags, literal));
         }
         jinja::runtime runtime(context);
         const auto rendered = jinja::runtime::gather_string_parts(runtime.execute(impl_->program));
@@ -114,6 +118,12 @@ TemplateOutput JinjaTemplate::render(const nlohmann::ordered_json& input,
         for (const auto& part : rendered->val_str.parts) {
             const auto begin = result.text.size();
             result.text += part.val;
+            if (part.literal && !part.val.empty()) {
+                if (!result.literal_spans.empty() && result.literal_spans.back().end == begin)
+                    result.literal_spans.back().end = result.text.size();
+                else
+                    result.literal_spans.push_back({begin, result.text.size()});
+            }
             if (part.origin)
                 result.regions.push_back(
                     {part.origin, begin, result.text.size(), part.source_offset});

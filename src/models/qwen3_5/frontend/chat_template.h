@@ -36,13 +36,13 @@ enum class Modality : std::uint8_t {
 };
 
 struct MediaPlaceholderByteSpec {
-    ByteSpan bytes;
+    text::ByteSpan bytes;
     Modality modality      = Modality::Image;
     std::size_t item_index = 0;
 };
 
 struct MediaTokenRunByteSpec {
-    ByteSpan bytes;
+    text::ByteSpan bytes;
     Modality modality       = Modality::Image;
     std::size_t item_index  = 0;
     std::size_t frame_index = 0;
@@ -112,6 +112,7 @@ struct RewriteCheckpointByteSpec {
 
 struct RenderedChat {
     std::string text;
+    std::vector<text::ByteSpan> literal_spans;
     bool starts_in_reasoning = false;
     std::vector<MediaPlaceholderByteSpec> media_placeholders;
     std::vector<MediaTokenRunByteSpec> media_token_runs;

@@ -12,10 +12,7 @@ constexpr std::string_view kVisionStart = "<|vision_start|>";
 constexpr std::string_view kVisionEnd   = "<|vision_end|>";
 
 bool template_bytes(const text::TemplateOutput& output, std::size_t begin, std::size_t end) {
-    const auto it =
-        std::lower_bound(output.regions.begin(), output.regions.end(), begin,
-                         [](const auto& region, std::size_t pos) { return region.end <= pos; });
-    return it == output.regions.end() || it->begin >= end;
+    return !text::overlaps(output.literal_spans, begin, end);
 }
 
 std::size_t find_marker(const text::TemplateOutput& output, std::string_view marker,
@@ -29,13 +26,13 @@ std::size_t find_marker(const text::TemplateOutput& output, std::string_view mar
 
 } // namespace
 
-std::optional<ByteSpan> unique_output_region(const text::TemplateOutput& output,
-                                             std::uint32_t tag) {
-    std::optional<ByteSpan> result;
+std::optional<text::ByteSpan> unique_output_region(const text::TemplateOutput& output,
+                                                   std::uint32_t tag) {
+    std::optional<text::ByteSpan> result;
     for (const auto& region : output.regions) {
         if (region.tag != tag) continue;
         if (result) return std::nullopt;
-        result = ByteSpan{region.begin, region.end};
+        result = text::ByteSpan{region.begin, region.end};
     }
     return result;
 }
@@ -102,7 +99,10 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
             if (!closed && next == std::string::npos) {
                 // Only the final assistant prefix controls the initial output channel.
                 const auto open_end =
-                    body.starts_with("<think>") ? header_end + 1 + 7 : std::string::npos;
+                    body.starts_with("<think>") &&
+                            template_bytes(output, header_end + 1, header_end + 1 + 7)
+                        ? header_end + 1 + 7
+                        : std::string::npos;
                 const auto close_think = open_end == std::string::npos
                                              ? std::string::npos
                                              : find_marker(output, "</think>", open_end);
@@ -115,8 +115,8 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
 
     // Each media input contributes one complete Qwen placeholder in input order.
     for (std::size_t pos = 0; pos < source.size();) {
-        const auto image = source.find("<|image_pad|>", pos);
-        const auto video = source.find("<|video_pad|>", pos);
+        const auto image = find_marker(output, "<|image_pad|>", pos);
+        const auto video = find_marker(output, "<|video_pad|>", pos);
         const auto pad   = std::min(image, video);
         if (pad == std::string::npos) break;
         const auto modality = pad == image ? Modality::Image : Modality::Video;
@@ -124,7 +124,9 @@ PromptLayout inspect_prompt_layout(const text::TemplateOutput& output,
             modality == Modality::Image ? "<|image_pad|>" : "<|video_pad|>";
         if (pad < kVisionStart.size() ||
             source.substr(pad - kVisionStart.size(), kVisionStart.size()) != kVisionStart ||
-            source.substr(pad + token.size(), kVisionEnd.size()) != kVisionEnd) {
+            source.substr(pad + token.size(), kVisionEnd.size()) != kVisionEnd ||
+            !template_bytes(output, pad - kVisionStart.size(),
+                            pad + token.size() + kVisionEnd.size())) {
             throw std::invalid_argument(
                 "chat template media pad requires a complete Qwen vision wrapper");
         }

@@ -77,11 +77,13 @@ bool is_lower(std::string_view text) {
     return found;
 }
 
-std::string map_case(std::string_view text, Case mode) {
+std::string map_case(std::string_view text, Case mode, std::span<std::size_t> boundaries) {
     const auto chars = characters(text);
     std::string out;
     out.reserve(text.size());
     bool previous_cased = false;
+    std::size_t boundary = 0;
+    while (boundary < boundaries.size() && boundaries[boundary] == 0) ++boundary;
     for (std::size_t i = 0; i < chars.size(); ++i) {
         const auto cp = chars[i].value;
         auto current  = mode;
@@ -105,6 +107,8 @@ std::string map_case(std::string_view text, Case mode) {
             append_case(out, cp, current);
         }
         previous_cased = cased(cp);
+        while (boundary < boundaries.size() && boundaries[boundary] <= chars[i].end)
+            boundaries[boundary++] = out.size();
     }
     return out;
 }

@@ -484,7 +484,7 @@ void append_media_token_run(std::string& out, std::string_view pad, std::uint64_
     const std::size_t begin = out.size();
     append_repeated(out, pad, count);
     runs.push_back(MediaTokenRunByteSpec{
-        .bytes       = ByteSpan{begin, out.size()},
+        .bytes       = text::ByteSpan{begin, out.size()},
         .modality    = modality,
         .item_index  = item_index,
         .frame_index = frame_index,
@@ -576,6 +576,10 @@ RenderedChat expand_placeholders(RenderedChat rendered, const std::vector<Vision
     const auto map_boundary = [&](std::size_t boundary, std::string_view kind) {
         return map_expanded_boundary(boundary, source.size(), expansions, kind);
     };
+    for (auto& span : rendered.literal_spans) {
+        span.begin = map_boundary(span.begin, "literal span");
+        span.end   = map_boundary(span.end, "literal span");
+    }
     if (rendered.rewrite_checkpoint) {
         rendered.rewrite_checkpoint->offset =
             map_boundary(rendered.rewrite_checkpoint->offset, "rewrite checkpoint");
@@ -758,7 +762,8 @@ EncodedChat encode_rendered_chat(const Tokenizer& tokenizer, const RenderedChat&
     }
 
     BoundaryEncodedText tokenized = tokenizer.encode_with_boundaries(
-        rendered.text, byte_boundaries, EncodeOptions{.max_tokens = maximum_tokens});
+        rendered.text, byte_boundaries, EncodeOptions{.max_tokens = maximum_tokens},
+        rendered.literal_spans);
     encoded.input_ids = std::move(tokenized.input_ids);
     if (encoded.input_ids.size() == maximum_tokens) { return encoded; }
     std::size_t boundary_index = 0;
@@ -916,7 +921,8 @@ ProcessedInput Processor::process(std::vector<ChatMessage> messages,
         const std::size_t preliminary_tokens =
             tokenizer_
                 .encode_with_boundaries(rendered.text, {},
-                                        EncodeOptions{.max_tokens = encode_limit})
+                                        EncodeOptions{.max_tokens = encode_limit},
+                                        rendered.literal_spans)
                 .input_ids.size();
         preliminary_tokenize_seconds =
             std::chrono::duration<double>(Clock::now() - preliminary_started).count();

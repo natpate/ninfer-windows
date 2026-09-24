@@ -42,9 +42,10 @@ string& string::append(const string& other) {
     for (const auto& part : other.parts) {
         if (!parts.empty()) {
             auto& last = parts.back();
-            if ((!last.origin && !part.origin) ||
-                (last.origin == part.origin && last.source_offset && part.source_offset &&
-                 *last.source_offset + last.val.size() == *part.source_offset)) {
+            if (last.literal == part.literal &&
+                ((!last.origin && !part.origin) ||
+                 (last.origin == part.origin && last.source_offset && part.source_offset &&
+                  *last.source_offset + last.val.size() == *part.source_offset))) {
                 last.val += part.val;
                 continue;
             }
@@ -66,7 +67,7 @@ string string::cut_bytes(std::size_t begin, std::size_t end) const {
             const auto local_begin = std::max(begin, offset) - offset;
             const auto local_end   = std::min(end, next) - offset;
             string_part output{part.origin, part.val.substr(local_begin, local_end - local_begin),
-                               std::nullopt};
+                               std::nullopt, part.literal};
             if (part.source_offset)
                 output.source_offset = *part.source_offset + local_begin;
             else if (local_begin != 0 || local_end != part.val.size())
@@ -159,28 +160,33 @@ std::vector<string> string::split(const std::optional<std::string>& separator, i
     return result;
 }
 
-string string::transformed(std::string text) const {
-    if (text == str()) return *this;
-    string result(text);
-    if (parts.size() == 1 && parts.front().origin) result.tag(parts.front().origin, false);
+string string::map_case(unicode::Case mode) const {
+    std::vector<std::size_t> ends;
+    ends.reserve(parts.size());
+    std::size_t offset = 0;
+    for (const auto& part : parts) ends.push_back(offset += part.val.size());
+    const auto mapped = unicode::map_case(str(), mode, ends);
+    string result;
+    result.parts.reserve(parts.size());
+    offset = 0;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        auto part = parts[i];
+        auto text = mapped.substr(offset, ends[i] - offset);
+        if (text != part.val) part.source_offset = std::nullopt;
+        part.val = std::move(text);
+        result.parts.push_back(std::move(part));
+        offset = ends[i];
+    }
     return result;
 }
 
-string string::uppercase() const {
-    return transformed(unicode::map_case(str(), unicode::Case::Upper));
-}
+string string::uppercase() const { return map_case(unicode::Case::Upper); }
 
-string string::lowercase() const {
-    return transformed(unicode::map_case(str(), unicode::Case::Lower));
-}
+string string::lowercase() const { return map_case(unicode::Case::Lower); }
 
-string string::capitalize() const {
-    return transformed(unicode::map_case(str(), unicode::Case::Capitalize));
-}
+string string::capitalize() const { return map_case(unicode::Case::Capitalize); }
 
-string string::titlecase() const {
-    return transformed(unicode::map_case(str(), unicode::Case::Title));
-}
+string string::titlecase() const { return map_case(unicode::Case::Title); }
 
 string string::strip(bool left, bool right, std::optional<const std::string_view> selected) const {
     const auto text  = str();
